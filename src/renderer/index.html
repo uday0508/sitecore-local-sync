@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;" />
+  <title>DevSync for SitecoreAI</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"><span></span><span></span></div>
+      <span class="brand-name">DevSync</span>
+    </div>
+
+    <button class="pill" id="projectPill" title="Change project">
+      <span class="pill-label">Project</span><span id="projectName">—</span>
+    </button>
+
+    <button class="pill" id="connPill" title="Connection settings">
+      <span class="dot" id="connDot"></span>
+      <span id="connText">Not connected</span>
+    </button>
+
+    <div class="spacer"></div>
+
+    <div class="profile-bar">
+      <select id="profileSelect" title="Saved sync sets"><option value="">Unsaved selection</option></select>
+      <button class="btn ghost small" id="saveProfile">Save</button>
+      <button class="icon-btn" id="deleteProfile" title="Delete profile">✕</button>
+    </div>
+    <div class="demo-badge hidden" id="demoBadge">Demo</div>
+  </header>
+
+  <!-- Welcome: no project yet -->
+  <section class="welcome hidden" id="welcome">
+    <div class="welcome-card">
+      <div class="logo big" aria-hidden="true"><span></span><span></span></div>
+      <h1>Bring cloud content to your local CM</h1>
+      <p>Open your SitecoreAI solution folder, the one with <code>sitecore.json</code>. DevSync remembers it next time.</p>
+      <button class="btn primary big" id="welcomeOpen">Open project folder…</button>
+    </div>
+  </section>
+
+  <main class="app-layout" id="main">
+    <!-- LEFT: content picker -->
+    <section class="card pane">
+      <div class="card-head">
+        <h2><span class="num">1</span> Pick content</h2>
+        <input class="search" id="pathInput" placeholder="Go to path…  /sitecore/content/…" spellcheck="false" />
+      </div>
+      <div class="sites" id="sites"></div>
+      <div class="tree" id="tree"><div class="empty">Connect to browse your content.</div></div>
+    </section>
+
+    <!-- MIDDLE: sync -->
+    <section class="card pane sync-pane">
+        <div class="card-head"><h2><span class="num">2</span> Sync to local</h2><span class="count" id="selCount">0 selected</span></div>
+        <div class="sel-list" id="selection"><div class="empty small">Tick pages or folders in the tree.</div></div>
+
+        <div class="auto-note">Brings everything these items need: templates, renderings, datasources, media and parent folders. Nothing on your machine is deleted without asking.</div>
+
+        <label class="switch">
+          <input type="checkbox" id="optDelta" />
+          <span class="track"></span>
+          <span class="switch-text"><b>Only what changed since last sync</b><small id="lastSyncText">Run a full sync once first.</small></span>
+        </label>
+        <label class="switch">
+          <input type="checkbox" id="maskOn" />
+          <span class="track"></span>
+          <span class="switch-text"><b>Mask personal data</b><small>Blanks fields like Email and Phone and scrubs email addresses before content reaches your machine.</small></span>
+        </label>
+
+        <button class="btn primary big full" id="syncBtn">Sync to local</button>
+        <div class="sub-actions">
+          <button class="link" id="previewBtn">Preview first</button>
+          <span>·</span>
+          <button class="link" id="dryRunBtn">Dry run (pull only)</button>
+          <button class="link danger hidden" id="cancelBtn">Cancel</button>
+        </div>
+    </section>
+
+    <!-- RIGHT: activity -->
+    <section class="card pane activity-pane">
+        <div class="card-head"><h2><span class="num">3</span> Activity</h2></div>
+        <ol class="steps" id="steps">
+          <li data-step="plan">Plan</li>
+          <li data-step="pull">Pull</li>
+          <li data-step="mask">Mask</li>
+          <li data-step="check">Check</li>
+          <li data-step="push">Push</li>
+        </ol>
+        <div class="summary" id="summary"><span class="hint">Nothing synced yet.</span></div>
+        <div class="tabs" id="tabs">
+          <button data-tab="plan" class="on">Plan <span class="count" id="planCount">0</span></button>
+          <button data-tab="log">Log</button>
+          <button class="link right" id="openWs">Open .devsync</button>
+        </div>
+        <div class="tab-body" data-body="plan" id="planBody"><div class="empty small">The plan appears here: every item, in push order.</div></div>
+        <div class="tab-body hidden log" data-body="log" id="logBody"></div>
+    </section>
+  </main>
+
+  <!-- Connection dialog -->
+  <dialog id="connDialog">
+    <form method="dialog" class="dialog">
+      <div class="dialog-head"><h2>Connection</h2><button class="icon-btn" value="close" title="Close">✕</button></div>
+
+      <div class="grid2">
+        <label>From (cloud)<select id="source"></select></label>
+        <label>To (local)<select id="target"></select></label>
+      </div>
+
+      <div class="notice hidden" id="noCloud">No cloud environment is connected yet. Pick one below, or paste its ID.</div>
+      <button type="button" class="link left" id="toggleAddEnv">+ Add cloud environment</button>
+      <div class="addenv hidden" id="addEnv">
+        <div class="row">
+          <button type="button" class="btn small" id="loadProjects">Load my projects</button>
+          <select id="cloudProject" class="grow" disabled><option>—</option></select>
+        </div>
+        <div class="envlist" id="envList"></div>
+        <div class="row">
+          <input id="envIdManual" class="grow" placeholder="…or paste an environment ID" spellcheck="false" />
+          <button type="button" class="btn small" id="connectManual">Add</button>
+        </div>
+      </div>
+
+      <div class="field-label">Sign in with</div>
+      <div class="seg" id="authMode">
+        <button type="button" data-mode="cli" class="on">My CLI login</button>
+        <button type="button" data-mode="automation">Automation client</button>
+      </div>
+      <div class="hint" id="authCli">Uses <code>dotnet sitecore cloud login</code>. Nothing else to set up.</div>
+      <div id="authAutomation" class="hidden">
+        <div class="grid2">
+          <label>Client ID <input id="clientId" autocomplete="off" spellcheck="false" /></label>
+          <label>Client secret <input id="clientSecret" type="password" autocomplete="off" /></label>
+        </div>
+        <label class="check"><input type="checkbox" id="remember" checked /> Remember on this computer (encrypted)</label>
+      </div>
+
+      <div class="dialog-foot">
+        <span class="status" id="connStatus"></span>
+        <button type="button" class="btn primary" id="connectBtn">Connect</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Conflict dialog -->
+  <dialog id="conflictDialog">
+    <form method="dialog" class="dialog wide">
+      <div class="dialog-head"><h2>Local items don't match the cloud</h2></div>
+      <p class="hint" id="conflictIntro"></p>
+      <div class="conflict-list" id="conflictList"></div>
+      <div class="choice-grid">
+        <button class="choice" value="replace">
+          <b>Replace local with cloud</b>
+          <span>Local items at these paths (and everything under them) are backed up to <code>.devsync/backups</code>, then removed so the cloud versions can be pushed.</span>
+        </button>
+        <button class="choice" value="skip">
+          <b>Keep local, skip these</b>
+          <span>Your local items stay as they are. The cloud items at these paths, and everything under them, are not pushed.</span>
+        </button>
+      </div>
+      <div class="notice hidden" id="conflictTplWarn">Some conflicts are <b>templates</b>. Replacing them changes the template IDs in your local CM, so local items and serialized repo files that use the old IDs will stop matching.</div>
+      <div class="dialog-foot"><span class="grow"></span>
+        <button class="btn ghost" value="cancel">Cancel sync</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Save profile dialog -->
+  <dialog id="nameDialog">
+    <form method="dialog" class="dialog">
+      <div class="dialog-head"><h2>Save sync set</h2></div>
+      <label>Name<input id="profileNameInput" placeholder="e.g. Homepage + Products" spellcheck="false" /></label>
+      <div class="hint">Saved to <code>.devsync/profiles.json</code>. Commit it so the whole team can use it.</div>
+      <div class="dialog-foot"><span class="grow"></span>
+        <button class="btn ghost" value="cancel">Cancel</button>
+        <button class="btn primary" value="save" id="nameSave">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast hidden" id="toast"></div>
+  <script src="demo.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

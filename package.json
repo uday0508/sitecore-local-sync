@@ -1,0 +1,44 @@
+{
+  "name": "devsync",
+  "productName": "DevSync for SitecoreAI",
+  "version": "0.1.1",
+  "description": "Pull content from a SitecoreAI cloud environment into your local Docker CM: pick items, follow dependencies, sync deltas, mask PII.",
+  "main": "src/main/main.js",
+  "bin": {
+    "devsync": "bin/devsync.js"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "build": {
+    "appId": "com.devsync.sitecoreai",
+    "productName": "DevSync for SitecoreAI",
+    "files": [
+      "src/**/*",
+      "bin/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
+  },
+  "dependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
+  }
+}
