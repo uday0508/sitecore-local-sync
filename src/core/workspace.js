@@ -5,6 +5,10 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { isLocalHost, resolveEndpoint, isLoginEndpoint, getEndpoint } = require('./project');
 const { projectDataDir } = require('./paths');
+const { CancelledError } = require('./util');
+
+// Stop a CLI command that prints nothing for this long (it is waiting on something it will never get).
+const CLI_IDLE_MS = Number(process.env.DEVSYNC_CLI_IDLE_MS) || 10 * 60 * 1000;
 
 const NAMESPACE = 'DevSync';
 const ITEMS_DIR = 'items';
@@ -84,20 +88,59 @@ async function runCli(args, opts = {}) {
   try {
     return await runCliOnce(args, { ...opts, onLine: (l, k) => { seen.push(l); onLine(l, k); } });
   } catch (e) {
-    if (args[0] !== 'sitecore' || !/dotnet tool restore|is not restored|Could not execute because the specified command or file was not found/i.test(seen.join('\n'))) throw e;
+    if (e.cancelled || e.idle || args[0] !== 'sitecore' || !/dotnet tool restore|is not restored|Could not execute because the specified command or file was not found/i.test(seen.join('\n'))) throw e;
     onLine('The Sitecore CLI is not restored in the DevSync workspace yet. Running "dotnet tool restore" once…', 'info');
     await runCliOnce(['tool', 'restore'], opts);
     return runCliOnce(args, opts);
   }
 }
 
-function runCliOnce(args, { cwd, dotnet = process.env.DEVSYNC_DOTNET || 'dotnet', onLine = () => {}, signal } = {}) {
+/** Kill a process and everything it started. On Windows dotnet runs the CLI as a child process, so kill the tree. */
+function killTree(child) {
+  if (!child || child.exitCode !== null || child.killed) return;
+  if (process.platform === 'win32') {
+    try { spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { child.kill(); }
+  } else {
+    try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    setTimeout(() => { try { if (child.exitCode === null) child.kill('SIGKILL'); } catch { /* gone */ } }, 3000).unref();
+  }
+}
+
+function runCliOnce(args, { cwd, dotnet = process.env.DEVSYNC_DOTNET || 'dotnet', onLine = () => {}, signal, idleMs = CLI_IDLE_MS } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new CancelledError());
     onLine(`> ${dotnet} ${args.join(' ')}`, 'cmd');
-    const child = spawn(dotnet, args, { cwd, shell: process.platform === 'win32', env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1' } });
+    // No keyboard input: a CLI prompt (e.g. an interactive login) gets end-of-input and fails
+    // straight away instead of waiting forever. A shell is only needed for .cmd/.bat wrappers.
+    const child = spawn(dotnet, args, {
+      cwd,
+      shell: /\.(cmd|bat)$/i.test(dotnet),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+    });
+    let settled = false;
+    let stop = null; // the error to report once the process is gone
+    const finish = (fn, v) => { if (settled) return; settled = true; clearInterval(watch); if (signal) signal.removeEventListener('abort', onAbort); fn(v); };
+    let lastOutput = Date.now();
+    const watch = setInterval(() => {
+      if (Date.now() - lastOutput < idleMs) return;
+      const err = new Error(`"${args.slice(0, 3).join(' ')}" printed nothing for ${Math.round(idleMs / 60000)} minute(s) and was stopped. Check that the local CM and the cloud environment are reachable, and that your Sitecore CLI login is still valid (dotnet sitecore cloud login).`);
+      err.idle = true;
+      stop = err;
+      killTree(child);
+      setTimeout(() => finish(reject, err), 5000).unref(); // in case "close" never comes
+    }, Math.min(5000, idleMs));
+    const onAbort = () => {
+      stop = new CancelledError();
+      killTree(child);
+      setTimeout(() => finish(reject, stop), 5000).unref();
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
     const pipe = (stream, kind) => {
       let buf = '';
       stream.on('data', (d) => {
+        lastOutput = Date.now();
         buf += d.toString();
         const parts = buf.split(/\r?\n/);
         buf = parts.pop();
@@ -107,9 +150,12 @@ function runCliOnce(args, { cwd, dotnet = process.env.DEVSYNC_DOTNET || 'dotnet'
     };
     pipe(child.stdout, 'out');
     pipe(child.stderr, 'err');
-    if (signal) signal.addEventListener('abort', () => child.kill(), { once: true });
-    child.on('error', (e) => reject(new Error(`Could not start "${dotnet}": ${e.message}. Is the .NET SDK installed and the Sitecore CLI restored (dotnet tool restore)?`)));
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`"${args.slice(0, 3).join(' ')}" exited with code ${code}`))));
+    child.on('error', (e) => finish(reject, stop || new Error(`Could not start "${dotnet}": ${e.message}. Is the .NET SDK installed and the Sitecore CLI restored (dotnet tool restore)?`)));
+    child.on('close', (code) => {
+      if (stop) return finish(reject, stop);
+      if (code === 0) return finish(resolve);
+      finish(reject, new Error(`"${args.slice(0, 3).join(' ')}" exited with code ${code}`));
+    });
   });
 }
 
@@ -172,4 +218,4 @@ function countYaml(dir) {
   return n;
 }
 
-module.exports = { prepareWorkspace, assertSafeTargets, runCli, syncTokensBack, pushTokensInto, countYaml, NAMESPACE };
+module.exports = { killTree, runCliOnce, prepareWorkspace, assertSafeTargets, runCli, syncTokensBack, pushTokensInto, countYaml, NAMESPACE };

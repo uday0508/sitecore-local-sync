@@ -12,7 +12,7 @@ const { runCli } = require('./workspace');
  */
 async function captureCli(args, { cwd, dotnet, onLine = () => {} }) {
   const lines = [];
-  await runCli(args, { cwd, dotnet, onLine: (l, kind) => { if (kind === 'out') lines.push(l); onLine(l, kind); } });
+  await runCli(args, { cwd, dotnet, idleMs: 120000, onLine: (l, kind) => { if (kind === 'out') lines.push(l); onLine(l, kind); } });
   return lines.join('\n');
 }
 

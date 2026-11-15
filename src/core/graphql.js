@@ -1,6 +1,8 @@
 'use strict';
 
-const { bracedId, normId, NULL_ID } = require('./util');
+const { bracedId, normId, NULL_ID, pLimit, CancelledError, throwIfAborted } = require('./util');
+
+const DEFAULT_TIMEOUT_MS = Number(process.env.DEVSYNC_API_TIMEOUT_MS) || 60000;
 
 const ITEM_FIELDS = 'itemId name path template { name templateId }';
 
@@ -10,7 +12,7 @@ const ITEM_FIELDS = 'itemId name path template { name templateId }';
  * DevSync only reads from the cloud. Mutations are refused here as a hard safety rule.
  */
 class AuthoringClient {
-  constructor({ host, tokenProvider, fetchImpl = fetch, database = 'master', log = () => {}, allowWrite = false }) {
+  constructor({ host, tokenProvider, fetchImpl = fetch, database = 'master', log = () => {}, allowWrite = false, signal = null, timeoutMs = DEFAULT_TIMEOUT_MS, concurrency = 4 }) {
     if (!host) throw new Error('CM host is required.');
     const base = /^https?:\/\//i.test(host) ? host : `https://${host}`;
     // Writes are only ever allowed against a local CM. Cloud clients are strictly read-only.
@@ -24,29 +26,47 @@ class AuthoringClient {
     this.database = database;
     this.log = log;
     this.supportsHasChildren = true;
+    this.signal = signal; // set per run by the caller; checked before and during every request
+    this.timeoutMs = timeoutMs;
+    this.concurrency = concurrency;
   }
 
   async query(query, variables = {}, attempt = 0) {
     if (/^\s*mutation\b/i.test(query) && !this.allowWrite) throw new Error('DevSync is read-only against cloud environments: mutations are blocked.');
+    throwIfAborted(this.signal);
     const token = await this.tokenProvider.getToken(attempt > 0);
-    let res;
+    throwIfAborted(this.signal);
+    const timer = new AbortController();
+    const t = setTimeout(() => timer.abort(), this.timeoutMs);
+    const onAbort = () => timer.abort();
+    if (this.signal) this.signal.addEventListener('abort', onAbort, { once: true });
+    let res, text;
     try {
       res = await this.fetch(this.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ query, variables }),
+        signal: timer.signal,
       });
+      text = await res.text();
     } catch (e) {
+      if (this.signal && this.signal.aborted) throw new CancelledError();
+      if (timer.signal.aborted) {
+        if (attempt < 1) { this.log(`API request timed out after ${Math.round(this.timeoutMs / 1000)}s, retrying once`); return this.query(query, variables, attempt + 1); }
+        throw new Error(`${new URL(this.endpoint).host} did not answer within ${Math.round(this.timeoutMs / 1000)} seconds. The environment may be overloaded or unreachable. Try again.`);
+      }
       throw new Error(`Can't reach ${new URL(this.endpoint).host}. Check your internet connection or VPN, and that the environment is running. (${e.cause?.code || e.message})`);
+    } finally {
+      clearTimeout(t);
+      if (this.signal) this.signal.removeEventListener('abort', onAbort);
     }
     if (res.status === 401 && attempt === 0) return this.query(query, variables, 1);
     if ((res.status === 429 || res.status >= 500) && attempt < 4) {
       const wait = 500 * 2 ** attempt;
       this.log(`API returned ${res.status}, retrying in ${wait}ms`);
-      await new Promise((r) => setTimeout(r, wait));
+      await sleep(wait, this.signal);
       return this.query(query, variables, attempt + 1);
     }
-    const text = await res.text();
     if (res.status === 404) throw new Error(`No Authoring API found at ${this.endpoint} (404). Check that this endpoint is a SitecoreAI CM environment host (xmc-....sitecorecloud.io).`);
     if (res.status === 403) throw new Error('Access denied (403). Your login or automation client has no access to this environment.');
     let json; try { json = JSON.parse(text); } catch { throw new Error(`Authoring API returned non-JSON (${res.status}): ${text.slice(0, 200) || 'empty response'}`); }
@@ -90,29 +110,40 @@ class AuthoringClient {
 
   /**
    * Resolve many IDs to { id, name, path, template, templateId }. Unknown IDs map to null.
-   * Batched for speed. One bad ID (e.g. a deleted item) can make the API reject a whole batch,
-   * so failed or empty answers are retried one by one, then with a language, then via the index.
+   * Batches run in parallel. A null inside a successful batch means "not an item" (most GUIDs in
+   * field values are rendering uids, datasource queries etc.), so it is NOT retried. Only when the
+   * API rejects a whole batch are its IDs retried one by one. `thorough` adds the slower
+   * language/index fallbacks, used only for the few templates the CLI reports missing.
    */
-  async resolveIds(ids, { batchSize = 25 } = {}) {
+  async resolveIds(ids, { batchSize = 25, thorough = false, onProgress = null } = {}) {
     const list = [...new Set([...ids].map(normId))].filter((x) => x.length === 32 && x !== NULL_ID);
     const out = new Map();
     const shape = (it) => (it ? { id: normId(it.itemId), name: it.name, path: it.path, template: it.template && it.template.name, templateId: normId(it.template && it.template.templateId) } : null);
-    for (let i = 0; i < list.length; i += batchSize) {
-      const chunk = list.slice(i, i + batchSize);
-      const body = chunk.map((id, j) => `i${j}: item(where: { database: ${JSON.stringify(this.database)}, itemId: ${JSON.stringify(bracedId(id))} }) { ${ITEM_FIELDS} }`).join('\n');
-      let data = null;
-      try { data = await this.query(`query {\n${body}\n}`); } catch (e) { if (!e.graphqlErrors) throw e; }
+    const one = (id) => `item(where: { database: ${JSON.stringify(this.database)}, itemId: ${JSON.stringify(bracedId(id))} }) { ${ITEM_FIELDS} }`;
+    const chunks = [];
+    for (let i = 0; i < list.length; i += batchSize) chunks.push(list.slice(i, i + batchSize));
+    const limit = pLimit(this.concurrency);
+    let done = 0;
+    await Promise.all(chunks.map((chunk) => limit(async () => {
+      throwIfAborted(this.signal);
+      let data = null; let rejected = false;
+      try { data = await this.query(`query {\n${chunk.map((id, j) => `i${j}: ${one(id)}`).join('\n')}\n}`); } catch (e) { if (!e.graphqlErrors) throw e; rejected = true; }
       for (let j = 0; j < chunk.length; j++) {
-        const hit = data && data[`i${j}`];
-        out.set(chunk[j], hit ? shape(hit) : await this.resolveOne(chunk[j]).then(shape));
+        let hit = data && data[`i${j}`];
+        if (!hit && rejected) {
+          try { const d = await this.query(`query { x: ${one(chunk[j])} }`); hit = d && d.x; } catch (e) { if (!e.graphqlErrors) throw e; }
+        }
+        if (!hit && thorough) hit = await this.resolveOne(chunk[j]);
+        out.set(chunk[j], shape(hit));
       }
-    }
+      done += chunk.length;
+      if (onProgress) onProgress(done, list.length);
+    })));
     return out;
   }
 
   async resolveOne(id) {
     const attempts = [
-      `item(where: { database: ${JSON.stringify(this.database)}, itemId: ${JSON.stringify(bracedId(id))} }) { ${ITEM_FIELDS} }`,
       `item(where: { database: ${JSON.stringify(this.database)}, itemId: ${JSON.stringify(bracedId(id))}, language: "en" }) { ${ITEM_FIELDS} }`,
     ];
     for (const a of attempts) {
@@ -132,8 +163,11 @@ class AuthoringClient {
     const out = new Map();
     const shape = (it) => (it ? { id: normId(it.itemId), path: it.path, templateId: normId(it.template && it.template.templateId) } : null);
     const q = (p) => `item(where: { database: ${JSON.stringify(this.database)}, path: ${JSON.stringify(p)} }) { itemId path template { templateId } }`;
-    for (let i = 0; i < list.length; i += batchSize) {
-      const chunk = list.slice(i, i + batchSize);
+    const chunks = [];
+    for (let i = 0; i < list.length; i += batchSize) chunks.push(list.slice(i, i + batchSize));
+    const limit = pLimit(this.concurrency);
+    await Promise.all(chunks.map((chunk) => limit(async () => {
+      throwIfAborted(this.signal);
       let data = null;
       try { data = await this.query(`query {\n${chunk.map((p, j) => `p${j}: ${q(p)}`).join('\n')}\n}`); } catch (e) { if (!e.graphqlErrors) throw e; }
       for (let j = 0; j < chunk.length; j++) {
@@ -141,7 +175,7 @@ class AuthoringClient {
         if (hit === undefined) { try { const d = await this.query(`query { x: ${q(chunk[j])} }`); hit = d && d.x; } catch (e) { if (!e.graphqlErrors) throw e; hit = null; } }
         out.set(chunk[j], shape(hit));
       }
-    }
+    })));
     return out;
   }
 
@@ -178,6 +212,7 @@ class AuthoringClient {
    * one document per language version, so its __Updated is that version's own date.
    */
   async searchUpdatedUnder(rootId, onPage, { pageSize = 100, maxPages = 50, language = null } = {}) {
+    throwIfAborted(this.signal);
     const criteria = [`{ operator: MUST, field: "_path", value: ${JSON.stringify(normId(rootId))} }`];
     if (language) criteria.push(`{ operator: MUST, field: "_language", value: ${JSON.stringify(String(language).toLowerCase())} }`);
     for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
@@ -203,6 +238,15 @@ AuthoringClient.prototype.listLanguages = async function listLanguages() {
   const names = ((node && node.children) || []).map((c) => c.name).filter((n) => /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/i.test(n));
   return names.length ? names : ['en'];
 };
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(new CancelledError());
+    const t = setTimeout(() => { if (signal) signal.removeEventListener('abort', on); resolve(); }, ms);
+    const on = () => { clearTimeout(t); reject(new CancelledError()); };
+    if (signal) signal.addEventListener('abort', on, { once: true });
+  });
+}
 
 function shapeItem(it, withChildren) {
   const node = {

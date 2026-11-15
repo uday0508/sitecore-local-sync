@@ -24,8 +24,10 @@ async function postToken(fetchImpl, authority, body) {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams(body).toString(),
+      signal: AbortSignal.timeout(30000),
     });
   } catch (e) {
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') throw new Error(`The Sitecore login service (${new URL(url).host}) did not answer within 30 seconds. Try again.`);
     throw new Error(`Can't reach the Sitecore login service (${new URL(url).host}). Check your internet connection or VPN. (${e.cause?.code || e.message})`);
   }
   const text = await res.text();

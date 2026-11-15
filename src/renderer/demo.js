@@ -107,6 +107,20 @@
   }
 
   let current = null;
+  // Cancel works in the demo too: every wait is a checkpoint.
+  let cancelled = false;
+  const CANCEL = { cancelled: true };
+  const cw = async (ms) => { await wait(ms); if (cancelled) throw CANCEL; };
+  const cancellable = async (fn, arg) => {
+    cancelled = false;
+    try { return await fn(arg); } catch (e) {
+      if (e !== CANCEL) throw e;
+      const message = 'Cancelled. Nothing more was changed.';
+      emit({ type: 'report', report: { at: new Date().toISOString(), status: 'cancelled', source: arg.profile.source, target: arg.profile.target, mode: 'full', profile: arg.profile.name, counts: {}, issues: [{ type: 'notice', severity: 'info', path: '', detail: message, fix: 'Run the sync again when you are ready.' }] } });
+      emit({ type: 'cancelled', message });
+      return { ok: false, error: message, cancelled: true };
+    } finally { conflictResolve = null; }
+  };
   let conflictListener = () => {};
   let conflictResolve = null;
   let conflictShown = false;
@@ -126,26 +140,26 @@
     children: async ({ id: i, path }) => { await wait(120); const x = i ? byId.get(i) : byPath.get(String(path).toLowerCase()); return okr(x ? shape(x, true) : null); },
     saveProfile: ({ profile }) => { const k = profiles.findIndex((p) => p.name === profile.name); if (k >= 0) profiles[k] = profile; else profiles.push(profile); return okr(project()); },
     deleteProfile: ({ name }) => { const k = profiles.findIndex((p) => p.name === name); if (k >= 0) profiles.splice(k, 1); return okr(project()); },
-    plan: async ({ profile, mode }) => {
+    plan: (arg) => cancellable(async ({ profile, mode }) => {
       if (mode === 'delta' && !lastSync[profile.name]) return { ok: false, error: 'No previous sync recorded for this profile. Run a full sync first.' };
       emit({ type: 'log', level: 'info', message: 'Discovering dependencies (datasources, media, ...)' });
-      await wait(500);
+      await cw(500);
       current = plan(profile, mode);
       emit({ type: 'log', level: 'info', message: `Plan ready: ${current.plan.includes.length} include(s)` });
       return okr(current);
-    },
-    run: async ({ profile, dryRun }) => {
+    }, arg),
+    run: (arg) => cancellable(async ({ profile, dryRun }) => {
       const step = (s, status, detail) => emit({ type: 'step', id: s, status, detail });
-      step('prepare', 'running'); await wait(200); step('prepare', 'done', 'DevSync data folder');
+      step('prepare', 'running'); await cw(200); step('prepare', 'done', 'DevSync data folder');
       step('pull', 'running', profile.source);
       emit({ type: 'log', level: 'cmd', message: `> dotnet sitecore ser pull -n ${profile.source}` });
-      for (const i of current.plan.includes) { await wait(90); emit({ type: 'log', level: 'info', message: `[master] Serialized ${i.path}` }); }
+      for (const i of current.plan.includes) { await cw(90); emit({ type: 'log', level: 'info', message: `[master] Serialized ${i.path}` }); }
       const files = current.plan.includes.reduce((a, i) => a + (i.scope === 'SingleItem' ? 1 : 6), 0);
       step('pull', 'done', `${files} item file(s)`);
-      if (profile.mask.enabled) { step('mask', 'running'); await wait(300); step('mask', 'done', '4 value(s) masked in 3 file(s)'); } else step('mask', 'skipped');
+      if (profile.mask.enabled) { step('mask', 'running'); await cw(300); step('mask', 'done', '4 value(s) masked in 3 file(s)'); } else step('mask', 'skipped');
       step('check', 'running', 'comparing with your local CM');
       emit({ type: 'log', level: 'cmd', message: `> dotnet sitecore ser pull -n ${profile.target}` });
-      await wait(300);
+      await cw(300);
       let conflicts = [];
       if (!conflictShown && !dryRun) {
         conflictShown = true;
@@ -153,7 +167,7 @@
         emit({ type: 'log', level: 'warn', message: '1 local item(s) have the same path as a cloud item but a different ID.' });
         step('check', 'waiting', '1 conflict(s): waiting for your choice');
         const answer = profile.onConflict !== 'ask' && profile.onConflict ? { decision: profile.onConflict } : await new Promise((r) => { conflictResolve = r; conflictListener(conflicts); });
-        if (answer.decision === 'cancel') { emit({ type: 'error', message: 'Cancelled. Nothing was pushed to the local CM.' }); return { ok: false, error: 'Cancelled. Nothing was pushed to the local CM.' }; }
+        if (answer.decision === 'cancel') throw CANCEL;
         emit({ type: 'log', level: 'info', message: answer.decision === 'replace' ? 'Moved local …/Home/Data to the local Recycle Bin.' : 'Skipped 1 conflicting path(s). Your local versions were kept.' });
         step('check', 'done', `1 conflict(s): ${answer.decision === 'replace' ? 'replaced local' : 'kept local'}`);
         current.decision = answer.decision;
@@ -162,7 +176,7 @@
       else {
         step('push', 'running', profile.target);
         emit({ type: 'log', level: 'cmd', message: `> dotnet sitecore ser push -n ${profile.target}` });
-        for (const i of current.plan.includes) { await wait(70); emit({ type: 'log', level: 'info', message: `[master] ${i.allowedPushOperations === 'CreateOnly' ? 'Exists' : 'Updated'} ${i.path}` }); }
+        for (const i of current.plan.includes) { await cw(70); emit({ type: 'log', level: 'info', message: `[master] ${i.allowedPushOperations === 'CreateOnly' ? 'Exists' : 'Updated'} ${i.path}` }); }
         step('push', 'done');
         lastSync[profile.name] = new Date().toISOString();
       }
@@ -174,10 +188,10 @@
       emit({ type: 'report', report });
       emit({ type: 'done', pulled: files });
       return okr({ pulled: files, conflicts: current.decision ? [{ path: '/sitecore/content/Acme/Acme Global/Home/Data' }] : [], decision: current.decision, warnings: [], report });
-    },
+    }, arg),
     saveReport: () => okr(null),
     removeLegacy: () => okr(true),
-    cancel: () => { if (conflictResolve) conflictResolve({ decision: 'cancel' }); return okr(true); },
+    cancel: () => { cancelled = true; if (conflictResolve) conflictResolve({ decision: 'cancel' }); return okr(true); },
     onConflicts: (fn) => { conflictListener = fn; },
     resolveConflicts: (a) => { if (conflictResolve) { conflictResolve(a); conflictResolve = null; } return okr(true); },
     openWorkspace: () => okr(true),

@@ -23,7 +23,7 @@ const SCOPES = [
 // ---------- helpers ----------
 async function call(fn, arg) {
   const r = await fn(arg);
-  if (!r.ok) throw new Error(r.error);
+  if (!r.ok) { const e = new Error(r.error); e.cancelled = !!r.cancelled; e.report = r.report || null; throw e; }
   return r.data;
 }
 function el(tag, attrs = {}, ...kids) {
@@ -236,6 +236,7 @@ function renderNode(item, expanded = false) {
   twisty.addEventListener('click', toggle);
   name.addEventListener('click', toggle);
   cb.addEventListener('change', () => {
+    if (state.busy) { cb.checked = state.selections.has(item.id); return; } // locked while running
     if (cb.checked) state.selections.set(item.id, { id: item.id, path: item.path, name: item.name, scope: 'ItemAndDescendants' });
     else state.selections.delete(item.id);
     node.classList.toggle('selected', cb.checked);
@@ -259,12 +260,12 @@ function renderSelection() {
   $('selCount').textContent = `${state.selections.size} selected`;
   if (!state.selections.size) { box.replaceChildren(el('div', { class: 'empty small' }, 'Tick pages or folders in the tree.')); return; }
   box.replaceChildren(...[...state.selections.values()].map((s) => {
-    const sel = el('select', { onchange: (e) => { s.scope = e.target.value; } },
+    const sel = el('select', { onchange: (e) => { if (state.busy) { e.target.value = s.scope; return; } s.scope = e.target.value; } },
       ...SCOPES.map(([v, t]) => { const o = el('option', { value: v }, t); if (v === s.scope) o.selected = true; return o; }));
     return el('div', { class: 'sel-item' },
       el('div', { class: 'sel-name', title: s.path }, s.name, el('small', {}, s.path)),
       sel,
-      el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { state.selections.delete(s.id); renderSelection(); syncTreeChecks(); } }, '✕'));
+      el('button', { class: 'icon-btn', title: 'Remove', onclick: () => { if (state.busy) return; state.selections.delete(s.id); renderSelection(); syncTreeChecks(); } }, '✕'));
   }));
 }
 
@@ -300,7 +301,7 @@ function renderLastSync(p) {
   const has = !!(p && p.lastSyncAt);
   $('optDelta').disabled = !has;
   if (!has) $('optDelta').checked = false;
-  $('lastSyncText').textContent = has ? `Last synced ${fmtDate(p.lastSyncAt)}. Deleted cloud items aren't detected.` : (p && p.name ? 'This profile has not been synced yet.' : 'Save a profile and sync once to use this.');
+  $('lastSyncText').textContent = has ? `Last synced ${fmtDate(p.lastSyncAt)}. Picks up changes in every language and items deleted in the cloud.` : (p && p.name ? 'This profile has not been synced yet.' : 'Save a profile and sync once to use this.');
 }
 
 function renderProfiles() {
@@ -380,7 +381,7 @@ async function sync(dryRun = false) {
   if (!checkReady()) return;
   const profile = currentProfile();
   if (profile.pushMode === 'mirror' && !dryRun && !window.confirm('Mirror mode deletes local items under your selected trees that do not exist in the cloud. Continue?')) return;
-  setBusy(true, true); resetSteps(); showTab('log');
+  setBusy(true); resetSteps(); showTab('log');
   $('summary').replaceChildren(el('span', { class: 'hint' }, 'Working…'));
   try {
     await makePlan();
@@ -403,6 +404,15 @@ async function sync(dryRun = false) {
 }
 
 function fail(e) {
+  if (e.cancelled) {
+    const running = $('steps').querySelector('li.running, li.waiting');
+    if (running) { running.className = 'skipped'; running.querySelector('small')?.remove(); running.append(el('small', {}, 'cancelled')); }
+    $('summary').replaceChildren(el('div', { class: 'big-note' }, 'Cancelled'), el('span', { class: 'hint' }, e.message));
+    toast(e.message);
+    logLine({ level: 'warn', message: e.message, at: new Date().toISOString() });
+    state.planned = null;
+    return;
+  }
   const msg = friendlyError(e.message);
   $('summary').replaceChildren(el('div', { class: 'big-note err' }, 'Sync stopped'), el('span', { class: 'hint' }, msg),
     el('div', { class: 'attention' }, el('button', { class: 'link', onclick: () => showTab('report') }, 'Open the report')));
@@ -419,7 +429,7 @@ function summaryTags(p) {
 function label(k, n) {
   const map = { template: 'template', layout: 'rendering', media: 'media', content: 'datasource', selection: 'selected', changed: 'changed', ancestor: 'parent folder' };
   const w = map[k] || k;
-  return n === 1 || w === 'media' ? w : `${w}s`;
+  return n === 1 || ['media', 'selected', 'changed'].includes(w) ? w : `${w}s`;
 }
 
 function renderPlan(p) {
@@ -443,11 +453,29 @@ function renderPlan(p) {
 
 }
 
-function setBusy(b, running = false) {
+// While a preview or sync runs, nothing that feeds it can change: project, connection, site,
+// tree, selection, profile and options are locked. Only Cancel (and a conflict answer) work.
+const LOCK_INERT = ['pathInput', 'sites', 'tree', 'selection'];
+const LOCK_DISABLE = ['syncBtn', 'previewBtn', 'dryRunBtn', 'profileSelect', 'saveProfile', 'deleteProfile', 'projectPill', 'connPill', 'optDelta', 'maskOn', 'welcomeOpen'];
+function setBusy(b) {
   state.busy = b;
-  for (const id of ['syncBtn', 'previewBtn', 'dryRunBtn']) $(id).disabled = b;
+  document.body.classList.toggle('locked', b);
+  for (const id of LOCK_INERT) { const x = $(id); if (x) x.inert = b; }
+  for (const id of LOCK_DISABLE) { const x = $(id); if (x) x.disabled = b; }
+  if (b && $('connDialog').open) $('connDialog').close();
   $('syncBtn').textContent = b ? 'Working…' : 'Sync to local';
-  $('cancelBtn').classList.toggle('hidden', !(b && running));
+  const c = $('cancelBtn');
+  c.classList.toggle('hidden', !b);
+  c.disabled = false;
+  c.textContent = 'Cancel';
+}
+
+async function cancelRun() {
+  if (!state.busy) return;
+  const c = $('cancelBtn');
+  c.disabled = true; c.textContent = 'Cancelling…';
+  logLine({ level: 'warn', message: 'Cancelling… stopping the current step.', at: new Date().toISOString() });
+  try { await api.cancel(); } catch { /* the run ends either way */ }
 }
 
 function resetSteps() { for (const li of $('steps').children) { li.className = ''; li.querySelector('small')?.remove(); } }
@@ -463,6 +491,7 @@ function onEvent(e) {
   if (e.type === 'log') logLine(e);
   if (e.type === 'step' && e.id !== 'prepare') step(e.id, e.status, e.detail);
   if (e.type === 'report') renderReport(e.report);
+  if (e.type === 'cancelled') logLine({ level: 'warn', message: e.message, at: e.at });
   if (e.type === 'error') {
     const running = $('steps').querySelector('li.running');
     if (running) running.className = 'error';
@@ -496,7 +525,7 @@ function renderReport(rep) {
   if (!rep) { box.replaceChildren(el('div', { class: 'empty small' }, 'After a sync, every item that needs attention is listed here with how to fix it.')); $('reportCount').textContent = '0'; return; }
   const warn = rep.issues.filter((i) => i.severity === 'warning').length;
   $('reportCount').textContent = String(rep.issues.filter((i) => i.severity !== 'info').length);
-  const status = rep.status === 'failed' ? ['err', 'Failed'] : warn ? ['warn', 'Completed with warnings'] : ['ok', 'Completed'];
+  const status = rep.status === 'failed' ? ['err', 'Failed'] : rep.status === 'cancelled' ? ['warn', 'Cancelled'] : warn ? ['warn', 'Completed with warnings'] : ['ok', 'Completed'];
   const c = rep.counts || {};
   box.replaceChildren(
     el('div', { class: 'report-head' },
@@ -569,7 +598,7 @@ function wire() {
   $('syncBtn').addEventListener('click', () => sync(false));
   $('previewBtn').addEventListener('click', preview);
   $('dryRunBtn').addEventListener('click', () => sync(true));
-  $('cancelBtn').addEventListener('click', () => api.cancel());
+  $('cancelBtn').addEventListener('click', cancelRun);
   $('openWs').addEventListener('click', () => api.openWorkspace());
   $('tabs').addEventListener('click', (e) => { const t = e.target.closest('button[data-tab]'); if (t) showTab(t.dataset.tab); });
   api.onEvent(onEvent);

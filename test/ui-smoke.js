@@ -59,6 +59,39 @@ app.whenReady().then(async () => {
   await wait(1200);
   checks.delta = await js(`({ profile: document.getElementById('profileSelect').value, deltaEnabled: !document.getElementById('optDelta').disabled, note: document.querySelector('#summary .big-note')?.textContent })`);
   await shot('3-delta.png');
+
+  // Lock + cancel: while a sync runs nothing can change, and Cancel always resets the button.
+  await js(`document.getElementById('optDelta').click()`);
+  const selBefore = await js(`document.getElementById('selCount').textContent`);
+  await js(`document.getElementById('syncBtn').click()`);
+  await wait(400);
+  checks.locked = await js(`(() => {
+    const cb = document.querySelector('#tree .node input[type=checkbox]:not(:checked)');
+    if (cb) cb.click(); // must be ignored
+    return {
+      bodyLocked: document.body.classList.contains('locked'),
+      treeInert: document.getElementById('tree').inert,
+      profileDisabled: document.getElementById('profileSelect').disabled,
+      projectDisabled: document.getElementById('projectPill').disabled,
+      connDisabled: document.getElementById('connPill').disabled,
+      cancelVisible: !document.getElementById('cancelBtn').classList.contains('hidden'),
+      syncText: document.getElementById('syncBtn').textContent,
+      selCount: document.getElementById('selCount').textContent,
+    };
+  })()`);
+  checks.locked.selectionUnchanged = checks.locked.selCount === selBefore;
+  await shot('7-locked.png');
+  await js(`document.getElementById('cancelBtn').click()`);
+  await wait(800);
+  checks.cancelled = await js(`({
+    note: document.querySelector('#summary .big-note')?.textContent,
+    syncText: document.getElementById('syncBtn').textContent,
+    syncEnabled: !document.getElementById('syncBtn').disabled,
+    cancelHidden: document.getElementById('cancelBtn').classList.contains('hidden'),
+    unlocked: !document.body.classList.contains('locked') && !document.getElementById('tree').inert,
+    reportBadge: document.querySelector('#reportBody .badge')?.textContent,
+  })`);
+  await shot('8-cancelled.png');
   await js(`document.getElementById('connPill').click()`);
   await wait(300);
   await shot('4-connection.png');
@@ -71,5 +104,9 @@ app.whenReady().then(async () => {
   await wait(500);
   await shot('5-narrow.png');
   console.log(JSON.stringify({ checks, errors }, null, 2));
-  app.exit(errors.length ? 1 : 0);
+  const l = checks.locked; const c = checks.cancelled;
+  const lockOk = l.bodyLocked && l.treeInert && l.profileDisabled && l.projectDisabled && l.connDisabled && l.cancelVisible && l.selectionUnchanged;
+  const cancelOk = c.note === 'Cancelled' && c.syncText === 'Sync to local' && c.syncEnabled && c.cancelHidden && c.unlocked;
+  if (!lockOk || !cancelOk) console.log('LOCK/CANCEL CHECK FAILED');
+  app.exit(errors.length || !lockOk || !cancelOk ? 1 : 0);
 });

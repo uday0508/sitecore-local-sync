@@ -103,7 +103,9 @@ async function discoverDependencies(client, selections, options = {}, log = () =
           if (item.templateId && opt.templates) addRef(item.templateId, 'templates', f.depth, true);
           for (const fld of item.fields) {
             const isBase = /^__base template$/i.test(fld.name);
-            for (const g of extractGuids(fld.value)) if (g !== f.id) addRef(g, isBase ? 'templates' : f.mode, f.depth, isBase);
+            if (/^(__revision|__owner|__updated by|__created by|__lock)$/i.test(fld.name)) continue;
+            const value = String(fld.value || '').replace(/\buid="\{?[0-9a-fA-F-]{36}\}?"/g, '');
+            for (const g of extractGuids(value)) if (g !== f.id) addRef(g, isBase ? 'templates' : f.mode, f.depth, isBase);
           }
         }
       })));
@@ -111,7 +113,7 @@ async function discoverDependencies(client, selections, options = {}, log = () =
       const unresolved = [...refs.keys()].filter((g) => !known.has(g));
       if (unresolved.length) {
         log(`Resolving ${unresolved.length} referenced IDs (${label}, round ${round + 1})`);
-        const resolved = await client.resolveIds(unresolved);
+        const resolved = await client.resolveIds(unresolved, { onProgress: (d, t) => { if (t > 500 && d % 500 < 25 && d < t) log(`  resolved ${d} of ${t}`); } });
         for (const [k, v] of resolved) known.set(k, v);
       }
 

@@ -152,6 +152,11 @@ To let the headless CLI call the local CM's API, trust the local dev certificate
 | *"Could not use the local CM's Authoring API"* | The local CM's API couldn't be reached with your CLI login. Check that `https://xmcloudcm.localhost/sitecore` opens without a certificate warning, and run `dotnet sitecore cloud login` again. DevSync still works without the API, but it can't fix duplicate names automatically. |
 | *"The local CM is not reachable"* | Start the containers (`up.ps1`) and check that `https://xmcloudcm.localhost/sitecore` opens. |
 | *"Your Sitecore login has expired"* | Run `dotnet sitecore cloud login` in the project folder. |
+| Stuck on *"checking references in all languages"* (v0.11.0) | Fixed in v0.12.0. Rendering `uid`s and `__Revision` values were read as item IDs, and each unknown ID was looked up again three times, one by one. Now unknown IDs are not retried, lookups run in parallel and the Log shows *"checked N of M"*. |
+| Cancel does nothing, or the button stays on *Working…* | Fixed in v0.12.0. Cancel now stops API calls and every step, and on Windows ends the whole `dotnet` process tree. The run ends with a **Cancelled** report. If you cancel during the push, items pushed before that stay. Run the sync again to finish. |
+| *"… did not answer within 60 seconds"* | Each API request times out after 60 s and is retried once. Check that the environment is up. To change the limit, set `DEVSYNC_API_TIMEOUT_MS`. |
+| *"… printed nothing for 10 minute(s) and was stopped"* | A Sitecore CLI command produced no output for 10 minutes. It's usually a lost connection or an expired login. Run `dotnet sitecore cloud login`. To change the limit, set `DEVSYNC_CLI_IDLE_MS`. The CLI never gets keyboard input, so a login prompt fails straight away instead of waiting. |
+| Can't change the site, tree, selection or profile | While a preview or sync runs, everything that feeds it is locked so the run matches what you see. Wait for it to finish, or click **Cancel**. |
 | *"did not return JSON"* when loading projects | Run `dotnet sitecore cloud login` first, and check that the XM Cloud plugin is in `sitecore.json`. |
 
 ## Known limitations (v0.1)

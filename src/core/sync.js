@@ -14,7 +14,7 @@ const { prepareWorkspace, assertSafeTargets, runCli, syncTokensBack, pushTokensI
 const { explainCliFailure } = require('./cliErrors');
 const { saveReport } = require('./report');
 const { loadManifest, saveManifest, itemsFromPulled, detectAfterPull, detectByIndex, mergeAfterDelta } = require('./manifest');
-const { normPath } = require('./util');
+const { normPath, throwIfAborted, isCancelled, CancelledError } = require('./util');
 const {
   readTree, findConflicts, collisionsFromOutput, conflictFromCollision, backupConflicts,
   batchParents, cleanupModule, skipInWorkspace, ignorePathInModule, parentPath,
@@ -53,6 +53,7 @@ function createLocalClient(project, targetName, { fetchImpl = fetch, log } = {})
         const res = await fetch(`${String(fresh.authority || 'https://auth.sitecorecloud.io').replace(/\/+$/, '')}/oauth/token`, {
           method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({ grant_type: 'refresh_token', client_id: fresh.clientId, refresh_token: fresh.refreshToken }).toString(),
+          signal: AbortSignal.timeout(30000),
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok || !json.access_token) throw new Error('Your Sitecore login has expired. Run "dotnet sitecore cloud login" in the project folder.');
@@ -116,7 +117,11 @@ async function pruneAlreadyLocal(client, localClient, plan, log) {
   return { dropped };
 }
 
-async function planSync(client, profile, { mode = 'full', projectRoot, since, log = () => {}, localClient = null } = {}) {
+async function planSync(client, profile, { mode = 'full', projectRoot, since, log: logOut = () => {}, localClient = null, signal = null } = {}) {
+  if (signal) { client.signal = signal; if (localClient) localClient.signal = signal; }
+  // Every progress line is also a cancel checkpoint.
+  const log = (...a) => { throwIfAborted(signal); logOut(...a); };
+  throwIfAborted(signal);
   if (!profile.selections || !profile.selections.length) throw new Error('Select at least one item to sync.');
   // Everything a page needs is always brought. Older profiles may still carry switches that
   // turned some of it off; those are ignored, because a partial set can't be pushed.
@@ -199,7 +204,11 @@ async function executeSync(project, profile, planned, {
 } = {}) {
   const emit = (e) => onEvent({ at: new Date().toISOString(), ...e });
   const log = (message, level = 'info') => emit({ type: 'log', message, level });
-  const step = (id, status, detail) => emit({ type: 'step', id, status, detail });
+  let pushing = false;
+  // Starting a step is a cancel checkpoint; API calls and CLI runs also stop on cancel.
+  const step = (id, status, detail) => { if (status === 'running') throwIfAborted(signal); if (id === 'push' && status === 'running') pushing = true; emit({ type: 'step', id, status, detail }); };
+  if (signal) { if (client) client.signal = signal; if (localClient) localClient.signal = signal; }
+  throwIfAborted(signal);
   const startedAt = new Date().toISOString();
   const warnings = [];
   const warn = (m) => { warnings.push(m); log(m, 'warn'); };
@@ -219,6 +228,7 @@ async function executeSync(project, profile, planned, {
         let api = null;
         if (localClient) { try { await localClient.resolvePaths(['/sitecore/content']); api = localClient; } catch { api = null; } }
         for (const d of del.deleted) {
+          throwIfAborted(signal);
           const extra = d.items > 1 ? ` (with ${d.items - 1} item(s) under it)` : '';
           if (!api) { issues.push({ type: 'deleted-in-cloud-manual', severity: 'warning', path: d.path, id: d.id, items: d.items, detail: `Deleted in the cloud since the last sync${extra}, but still on your machine.`, fix: `Delete item ${d.id} in your local Content Editor.` }); continue; }
           const local = await api.resolveIds([d.id]);
@@ -284,7 +294,7 @@ async function executeSync(project, profile, planned, {
     step('check', 'waiting', `${conflicts.length} conflict(s): waiting for your choice`);
     const answer = await onConflicts(conflicts);
     const decision = answer && answer.decision;
-    if (decision !== 'replace' && decision !== 'skip') throw new Error('Cancelled. Nothing was pushed to the local CM.');
+    if (decision !== 'replace' && decision !== 'skip') throw new CancelledError('Cancelled. Nothing was pushed to the local CM.');
     policy = decision; // asked once per run; "remember" also stores it on the profile
     return decision;
   };
@@ -297,6 +307,7 @@ async function executeSync(project, profile, planned, {
     if (!localClient) return null;
     try { await localClient.resolvePaths(['/sitecore/content']); localApi = localClient; }
     catch (e) {
+      if (isCancelled(e)) throw e;
       warn(`Could not use the local CM's Authoring API (${e.message}). Falling back to serialization-only checks.`);
       issue({ type: 'notice', severity: 'info', path: '', detail: `The local CM's API could not be reached (${e.message}), so conflicts and duplicates were handled through serialization only.`, fix: 'Check that https://xmcloudcm.localhost/sitecore opens without a certificate warning, and run "dotnet sitecore cloud login".' });
     }
@@ -556,7 +567,16 @@ async function executeSync(project, profile, planned, {
     if (!skipPush) cleanupWorkspaces(ws.base);
     emit({ type: 'done', pulled, conflicts: conflictsFound.length, warnings });
     return { pulled, workspace: ws.dir, conflicts: conflictsFound, decision: decisionTaken, warnings, orphans, report };
-  } catch (e) {
+  } catch (err) {
+    let e = err;
+    if (isCancelled(e) || (signal && signal.aborted)) {
+      if (!isCancelled(e)) e = new CancelledError();
+      if (pushing && !/Nothing was pushed/.test(e.message)) e.message = 'Cancelled during the push. Items pushed before you cancelled stay in your local CM; run the sync again to finish.';
+      issue({ type: 'notice', severity: 'info', path: '', detail: e.message, fix: 'Run the sync again when you are ready.' });
+      try { e.report = finishReport('cancelled', e.message, countYaml(ws.itemsDir)); } catch { /* best effort */ }
+      emit({ type: 'cancelled', message: e.message });
+      throw e;
+    }
     issue({ type: 'error', severity: 'error', path: '', detail: e.message, fix: e.hint || 'See the Log tab for the full output.' });
     try { e.report = finishReport('failed', e.message, countYaml(ws.itemsDir)); } catch { /* best effort */ }
     emit({ type: 'error', message: e.message });

@@ -255,3 +255,9 @@ table.report td.path { word-break: normal; overflow-wrap: anywhere; }
 table.report td .tag { white-space: normal; }
 table.report .ops { overflow-wrap: anywhere; }
 table.report td { overflow-wrap: anywhere; }
+
+/* Locked while a preview or sync runs */
+body.locked #tree, body.locked #sites, body.locked #selection, body.locked #pathInput { opacity: .55; cursor: not-allowed; }
+body.locked .pill:disabled, body.locked #profileSelect:disabled, body.locked .switch input:disabled + * { opacity: .55; cursor: not-allowed; }
+body.locked .card-head .count::after { content: " · locked while running"; }
+#cancelBtn:disabled { opacity: .7; cursor: progress; }

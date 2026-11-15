@@ -82,7 +82,7 @@ async function ensureTemplates({ project, profile, client, ws, run, log = () => 
     }
     if (!missing.length) break;
 
-    const resolved = await client.resolveIds(missing);
+    const resolved = await client.resolveIds(missing, { thorough: true });
     const deps = [];
     for (const t of missing) {
       const info = resolved.get(t);
@@ -178,6 +178,10 @@ function dropItemsUsingTemplates(ws, templateIds) {
  *  - languages: language name -> number of items with versions in it
  * Field IDs and "__Base template" (templates are handled separately) are not references.
  */
+// Fields whose GUIDs never point to items worth pulling: base templates are handled by
+// ensureTemplates, and every version carries a random __Revision GUID.
+const NOT_REFS = /^(__base template|__revision|__owner|__updated by|__created by|__lock)$/i;
+
 function readPulledContent(itemsDir) {
   const ids = new Set();
   const refs = new Map();
@@ -194,7 +198,9 @@ function readPulledContent(itemsDir) {
       let inValue = false;
       const langsHere = new Set();
       const add = (line) => {
-        if (/^__base template$/i.test(hint)) return;
+        if (NOT_REFS.test(hint)) return;
+        // Rendering instance uids in layout XML are not items (s:id / s:ds / s:par still are).
+        line = line.replace(/\buid=\\?"\{?[0-9a-fA-F-]{36}\}?\\?"/g, '');
         for (const g of line.match(GUID) || []) { const id = normId(g); if (id !== NULL_ID && !refs.has(id)) refs.set(id, itemPath); }
       };
       for (const line of lines) {
@@ -250,7 +256,11 @@ async function ensureReferences({ project, profile, client, ws, run, localClient
     const todo = [...refs.keys()].filter((id) => !attempted.has(id));
     if (!todo.length) break;
     todo.forEach((id) => attempted.add(id));
-    const found = await client.resolveIds(todo);
+    log(`Checking ${todo.length} referenced ID(s) from all languages…`);
+    let lastLog = Date.now();
+    const found = await client.resolveIds(todo, {
+      onProgress: (done, total) => { if (Date.now() - lastLog > 3000 && done < total) { lastLog = Date.now(); log(`  checked ${done} of ${total}`); } },
+    });
     let candidates = todo.map((id) => ({ id, info: found.get(id) })).filter((x) => x.info)
       .map((x) => ({ ...x, category: classify(x.info.path) }))
       .filter((x) => ['content', 'media', 'layout'].includes(x.category) && !isShipped(x.info.path));

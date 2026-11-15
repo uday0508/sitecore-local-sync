@@ -50,7 +50,7 @@ function relevant(manifest, selections) {
  */
 async function verifyCandidates(client, candidates) {
   if (!candidates.length) return { deleted: [], moved: [] };
-  const found = await client.resolveIds(candidates.map((c) => c.id));
+  const found = await client.resolveIds(candidates.map((c) => c.id), { thorough: true });
   const deleted = [], moved = [];
   for (const c of candidates) {
     const now = found.get(c.id);

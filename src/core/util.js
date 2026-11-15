@@ -77,7 +77,15 @@ function safeName(s, max = 40) {
   return String(s).replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, max) || 'item';
 }
 
+/** Thrown when the user cancels. Callers show it as a normal stop, not a failure. */
+class CancelledError extends Error {
+  constructor(msg = 'Cancelled. Nothing more was changed.') { super(msg); this.name = 'CancelledError'; this.cancelled = true; }
+}
+function isCancelled(e) { return !!(e && (e.cancelled || e.name === 'CancelledError')); }
+function throwIfAborted(signal) { if (signal && signal.aborted) throw new CancelledError(); }
+
 module.exports = {
+  CancelledError, isCancelled, throwIfAborted,
   NULL_ID, normId, bracedId, extractGuids, normPath, isSameOrUnder, isStrictlyUnder,
   parentPath, parseSitecoreDate, pLimit, safeName,
 };

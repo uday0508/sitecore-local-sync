@@ -52,11 +52,15 @@ async function main() {
       : { mode: 'cli' };
     const log = (m) => console.log(`  ${m}`);
     const client = createSourceClient(project, profile.source, auth, { log });
-    const planned = await planSync(client, profile, { mode: a.delta ? 'delta' : 'full', projectRoot: project.root, log, localClient: createLocalClient(project, profile.target) });
+    // Ctrl+C stops cleanly: API calls stop and the Sitecore CLI process tree is killed.
+    const ac = new AbortController();
+    process.once('SIGINT', () => { console.error('\nCancelling…'); ac.abort(); });
+    const planned = await planSync(client, profile, { mode: a.delta ? 'delta' : 'full', projectRoot: project.root, log, localClient: createLocalClient(project, profile.target), signal: ac.signal });
     console.log(`\nPlan: ${planned.plan.includes.length} include(s)`);
     for (const i of planned.plan.includes) console.log(`  [${i.kind.padEnd(9)}] ${i.scope.padEnd(18)} ${i.allowedPushOperations.padEnd(21)} ${i.path}`);
     if (cmd === 'plan') return;
     await executeSync(project, profile, planned, {
+      signal: ac.signal,
       client,
       // Node needs the local dev root certificate: set NODE_EXTRA_CA_CERTS to "$(mkcert -CAROOT)/rootCA.pem".
       localClient: createLocalClient(project, profile.target),

@@ -11,7 +11,24 @@ const { projectDataDir, migrateLegacy, removeLegacy } = require('../core/paths')
 const { toHtml, toCsv, loadLastReport } = require('../core/report');
 
 let win;
-const session = { project: null, client: null, sourceName: null, abort: null, planned: null };
+const session = { project: null, client: null, sourceName: null, abort: null, planned: null, running: null };
+
+// While a preview or sync runs, nothing that changes its inputs is allowed (project, connection,
+// profiles), and only one run at a time. The renderer locks the same controls; this is the backstop.
+function notWhileRunning() {
+  if (session.running) throw new Error(`A ${session.running === 'plan' ? 'preview' : 'sync'} is running. Wait for it to finish or click Cancel.`);
+}
+async function exclusive(kind, clients, fn) {
+  notWhileRunning();
+  session.running = kind;
+  session.abort = new AbortController();
+  for (const c of clients) if (c) c.signal = session.abort.signal;
+  try { return await fn(session.abort.signal); } finally {
+    for (const c of clients) if (c) c.signal = null; // the shared client must work again after a cancel
+    session.abort = null;
+    session.running = null;
+  }
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -27,6 +44,8 @@ function createWindow() {
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());
+// Closing the window mid-run must not leave the Sitecore CLI running in the background.
+app.on('before-quit', () => { if (session.abort) session.abort.abort(); });
 
 // Encrypted credential store (OS keychain-backed via safeStorage). Never written to the project.
 const credFile = () => path.join(app.getPath('userData'), 'credentials.json');
@@ -35,7 +54,7 @@ function credKey(root, ep) { return `${root}::${ep}`.toLowerCase(); }
 
 function ok(fn) {
   return async (_e, arg) => {
-    try { return { ok: true, data: await fn(arg || {}) }; } catch (err) { return { ok: false, error: err.message }; }
+    try { return { ok: true, data: await fn(arg || {}) }; } catch (err) { return { ok: false, error: err.message, cancelled: !!err.cancelled, report: err.report || null }; }
   };
 }
 
@@ -65,6 +84,7 @@ ipcMain.handle('settings:set', ok(async (patch) => {
   return writeSettings(Object.fromEntries(Object.entries(patch).filter(([k]) => allowed.includes(k))));
 }));
 ipcMain.handle('project:last', ok(async () => {
+  notWhileRunning();
   const { lastProject } = readSettings();
   if (!lastProject || !fs.existsSync(path.join(lastProject, 'sitecore.json'))) return null;
   session.project = loadProject(lastProject);
@@ -73,6 +93,7 @@ ipcMain.handle('project:last', ok(async () => {
 }));
 
 ipcMain.handle('project:pick', ok(async () => {
+  notWhileRunning();
   const r = await dialog.showOpenDialog(win, { title: 'Select your SitecoreAI solution folder (contains sitecore.json)', properties: ['openDirectory'] });
   if (r.canceled || !r.filePaths[0]) return null;
   session.project = loadProject(r.filePaths[0]);
@@ -81,8 +102,8 @@ ipcMain.handle('project:pick', ok(async () => {
   return projectInfo();
 }));
 
-ipcMain.handle('project:open', ok(async ({ root }) => { session.project = loadProject(root); session.client = null; return projectInfo(); }));
-ipcMain.handle('project:reload', ok(async () => { session.project = loadProject(session.project.root); return projectInfo(); }));
+ipcMain.handle('project:open', ok(async ({ root }) => { notWhileRunning(); session.project = loadProject(root); session.client = null; return projectInfo(); }));
+ipcMain.handle('project:reload', ok(async () => { notWhileRunning(); session.project = loadProject(session.project.root); return projectInfo(); }));
 
 ipcMain.handle('creds:get', ok(async ({ endpoint }) => {
   const c = readCreds()[credKey(session.project.root, endpoint)];
@@ -92,6 +113,7 @@ ipcMain.handle('creds:get', ok(async ({ endpoint }) => {
 
 ipcMain.handle('source:connect', ok(async ({ source, auth, remember }) => {
   if (!session.project) throw new Error('Open a project first.');
+  notWhileRunning();
   session.project = loadProject(session.project.root); // pick up a fresh CLI login
   const client = createSourceClient(session.project, source, auth);
   const sites = await client.listSites();
@@ -112,6 +134,7 @@ const needProject = () => { if (!session.project) throw new Error('Open a projec
 ipcMain.handle('env:projects', ok(async () => listProjects(needProject(), { onLine: cliLog })));
 ipcMain.handle('env:list', ok(async ({ projectId }) => listEnvironments(needProject(), projectId, { onLine: cliLog })));
 ipcMain.handle('env:connect', ok(async ({ environmentId }) => {
+  notWhileRunning();
   await connectEnvironment(needProject(), environmentId, { onLine: cliLog });
   session.project = loadProject(session.project.root);
   return projectInfo();
@@ -122,18 +145,20 @@ ipcMain.handle('tree:children', ok(async ({ id, path: p, language }) => {
   return session.client.getItemWithChildren({ id, path: p, language });
 }));
 
-ipcMain.handle('profiles:save', ok(async ({ profile }) => { saveProfile(session.project.root, profile); return projectInfo(); }));
-ipcMain.handle('profiles:delete', ok(async ({ name }) => { deleteProfile(session.project.root, name); return projectInfo(); }));
+ipcMain.handle('profiles:save', ok(async ({ profile }) => { notWhileRunning(); saveProfile(session.project.root, profile); return projectInfo(); }));
+ipcMain.handle('profiles:delete', ok(async ({ name }) => { notWhileRunning(); deleteProfile(session.project.root, name); return projectInfo(); }));
 
 ipcMain.handle('sync:plan', ok(async ({ profile, mode }) => {
   if (!session.client) throw new Error('Connect to a source environment first.');
   const send = (message) => win.webContents.send('sync:event', { type: 'log', level: 'info', message, at: new Date().toISOString() });
-  session.planned = await planSync(session.client, profile, {
-    mode, projectRoot: session.project.root, log: send,
-    localClient: createLocalClient(session.project, profile.target, { fetchImpl: (u, o) => net.fetch(u, o) }),
+  const localClient = createLocalClient(session.project, profile.target, { fetchImpl: (u, o) => net.fetch(u, o) });
+  session.planned = null;
+  return exclusive('plan', [session.client, localClient], async (signal) => {
+    const planned = await planSync(session.client, profile, { mode, projectRoot: session.project.root, log: send, localClient, signal });
+    session.planned = planned;
+    session.plannedFor = JSON.stringify(profile);
+    return planned;
   });
-  session.plannedFor = JSON.stringify(profile);
-  return session.planned;
 }));
 
 // Conflict decisions: the engine asks, the renderer answers through 'sync:resolve'.
@@ -144,14 +169,14 @@ ipcMain.handle('sync:resolve', ok(async ({ decision, remember }) => {
 }));
 
 ipcMain.handle('sync:run', ok(async ({ profile, dryRun }) => {
+  notWhileRunning();
   if (!session.planned || session.plannedFor !== JSON.stringify(profile)) throw new Error('Settings changed since the preview. Click "Preview plan" again before syncing.');
-  session.abort = new AbortController();
-  try {
-    return await executeSync(session.project, profile, session.planned, {
+  // Electron's net.fetch uses the OS certificate store, so the local dev cert (mkcert) is trusted.
+  const localClient = createLocalClient(session.project, profile.target, { fetchImpl: (u, o) => net.fetch(u, o) });
+  return exclusive('sync', [session.client, localClient], (signal) => executeSync(session.project, profile, session.planned, {
       client: session.client,
-      // Electron's net.fetch uses the OS certificate store, so the local dev cert (mkcert) is trusted.
-      localClient: createLocalClient(session.project, profile.target, { fetchImpl: (u, o) => net.fetch(u, o) }),
-      skipPush: !!dryRun, signal: session.abort.signal,
+      localClient,
+      skipPush: !!dryRun, signal,
       onConflicts: (conflicts) => new Promise((resolve) => {
         pendingConflict = (answer) => {
           // "Remember" stores the choice on the saved profile, so next time it isn't asked.
@@ -163,18 +188,17 @@ ipcMain.handle('sync:run', ok(async ({ profile, dryRun }) => {
         };
         win.webContents.send('sync:conflicts', conflicts);
       }),
-      onEvent: (e) => win.webContents.send('sync:event', e),
-    });
-  } finally { session.abort = null; }
+      onEvent: (e) => { if (!win.isDestroyed()) win.webContents.send('sync:event', e); },
+    }).finally(() => { pendingConflict = null; }));
 }));
 
 ipcMain.handle('sync:cancel', ok(async () => {
   if (pendingConflict) { const r = pendingConflict; pendingConflict = null; r({ decision: 'cancel' }); }
   if (session.abort) session.abort.abort();
-  return true;
+  return !!session.running;
 }));
 ipcMain.handle('shell:open', ok(async () => { await shell.openPath(projectDataDir(session.project.root)); return true; }));
-ipcMain.handle('project:removeLegacy', ok(async () => { removeLegacy(session.project.root); return true; }));
+ipcMain.handle('project:removeLegacy', ok(async () => { notWhileRunning(); removeLegacy(session.project.root); return true; }));
 ipcMain.handle('report:save', ok(async ({ report }) => {
   const stamp = String(report.at).slice(0, 16).replace(/[:T]/g, '-');
   const r = await dialog.showSaveDialog(win, {
