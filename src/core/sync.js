@@ -20,7 +20,7 @@ const {
   batchParents, cleanupModule, skipInWorkspace, ignorePathInModule, parentPath,
 } = require('./conflicts');
 const { getLastSync, setLastSync } = require('./profiles');
-const { ensureTemplates, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates } = require('./closure');
+const { ensureTemplates, ensureReferences, ensureLanguages, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates } = require('./closure');
 
 /** Build a read-only Authoring API client for the source (cloud) endpoint. */
 function createSourceClient(project, sourceName, auth = {}, { fetchImpl = fetch, log } = {}) {
@@ -124,14 +124,20 @@ async function planSync(client, profile, { mode = 'full', projectRoot, since, lo
 
   let changed = null;
   let deletions = null;
+  const languageNotices = [];
+  const changedByLanguage = {};
   let scanSet = profile.selections;
   let sinceUsed = null;
   if (mode === 'delta') {
     sinceUsed = since || (projectRoot && getLastSync(projectRoot, profile.name));
     if (!sinceUsed) throw new Error('No previous sync recorded for this profile. Run a full sync first.');
     log(`Looking for items changed since ${sinceUsed}`);
-    changed = await findChangedItems(client, profile.selections, sinceUsed, { log });
-    log(`${changed.length} changed item(s) found`);
+    let languages = null;
+    try { languages = await client.listLanguages(); } catch { languages = null; }
+    if (languages && languages.length > 1) log(`Checking changes in ${languages.length} languages: ${languages.join(', ')}`);
+    changed = await findChangedItems(client, profile.selections, sinceUsed, { log, languages, notices: languageNotices });
+    for (const c of changed) for (const l of (c.languages && c.languages.length ? c.languages : ['any'])) changedByLanguage[l] = (changedByLanguage[l] || 0) + 1;
+    log(`${changed.length} changed item(s) found${Object.keys(changedByLanguage).length ? ` (${Object.entries(changedByLanguage).map(([l, n]) => `${l} ${n}`).join(', ')})` : ''}`);
     const manifest = projectRoot && loadManifest(projectRoot, profile.name);
     if (manifest) {
       try {
@@ -170,6 +176,7 @@ async function planSync(client, profile, { mode = 'full', projectRoot, since, lo
     skipped: [...deps.skipped, ...dropped.map((d) => ({ path: d.path, category: d.kind, why: 'already on your machine' }))],
     alreadyLocal: dropped.length,
     deletions,
+    changedByLanguage, languageNotices,
   };
 }
 
@@ -200,8 +207,44 @@ async function executeSync(project, profile, planned, {
   const issue = (i) => issues.push({ severity: 'warning', ...i });
   const t0 = Date.now();
 
-  if (!planned.plan.includes.length) { log('Nothing to sync: the plan is empty.'); emit({ type: 'done', pulled: 0 }); return { pulled: 0, conflicts: [], warnings }; }
   assertSafeTargets(project, profile.source, profile.target, { allowRemoteTarget });
+  if (!planned.plan.includes.length) {
+    // Nothing to pull. Deletions found by the manifest check still apply, and there is still a report.
+    log('No changed content to pull.');
+    const del = planned.deletions;
+    if (del && del.deleted.length) {
+      if (skipPush) {
+        for (const d of del.deleted) issues.push({ type: 'deleted-in-cloud-pending', severity: 'info', path: d.path, id: d.id, items: d.items, detail: 'Deleted in the cloud since the last sync.', fix: 'A real sync will move it to your local Recycle Bin.' });
+      } else {
+        let api = null;
+        if (localClient) { try { await localClient.resolvePaths(['/sitecore/content']); api = localClient; } catch { api = null; } }
+        for (const d of del.deleted) {
+          const extra = d.items > 1 ? ` (with ${d.items - 1} item(s) under it)` : '';
+          if (!api) { issues.push({ type: 'deleted-in-cloud-manual', severity: 'warning', path: d.path, id: d.id, items: d.items, detail: `Deleted in the cloud since the last sync${extra}, but still on your machine.`, fix: `Delete item ${d.id} in your local Content Editor.` }); continue; }
+          const local = await api.resolveIds([d.id]);
+          if (!local.get(d.id)) continue;
+          await api.deleteItem(d.id);
+          log(`Deleted in the cloud: moved local ${d.path}${extra} to the local Recycle Bin.`);
+          issues.push({ type: 'deleted-in-cloud', severity: 'info', path: d.path, id: d.id, items: d.items, detail: `Deleted in the cloud since the last sync${extra}, so it was moved to your local Recycle Bin.`, fix: 'Nothing to do. To keep it, restore it from the Recycle Bin in the local Content Editor.' });
+        }
+        const manifest = loadManifest(project.root, profile.name);
+        if (manifest) saveManifest(project.root, profile.name || 'Quick sync', mergeAfterDelta(manifest, { deletedAll: del.deletedAll || [], changed: [], moved: del.moved || [] }, profile.selections));
+      }
+    }
+    for (const n of planned.languageNotices || []) issues.push({ type: 'notice', severity: 'info', path: '', detail: n, fix: 'Nothing to do. If an item changed only in another language was missed, run a full sync.' });
+    if (!skipPush) setLastSync(project.root, profile.name || 'adhoc', startedAt, { includes: 0, items: 0, mode: planned.mode });
+    const report = {
+      at: startedAt, durationMs: Date.now() - t0, status: 'completed', error: null,
+      project: project.root, profile: profile.name || 'Quick sync', source: profile.source, target: profile.target,
+      mode: planned.mode, dryRun: !!skipPush,
+      counts: { includes: 0, pulledFiles: 0, alreadyLocal: planned.alreadyLocal || 0, conflicts: 0, deletedInCloud: issues.filter((i) => i.type.startsWith('deleted-in-cloud')).length, changedByLanguage: planned.changedByLanguage || {}, skippedItems: 0 },
+      issues,
+    };
+    report.file = saveReport(project.root, report);
+    emit({ type: 'report', report });
+    emit({ type: 'done', pulled: 0 });
+    return { pulled: 0, conflicts: [], warnings, report, orphans: [] };
+  }
 
   step('prepare', 'running');
   const ws = prepareWorkspace(project, planned.moduleJson, { sourceName: profile.source });
@@ -349,15 +392,35 @@ async function executeSync(project, profile, planned, {
       }
     }
     // 2. Every pulled item's template (and base templates) must be there, whatever the scan limits.
+    for (const n of planned.languageNotices || []) issue({ type: 'notice', severity: 'info', path: '', detail: n, fix: 'Nothing to do. If an item changed only in another language was missed, run a full sync.' });
+    await getLocalApi();
+    if (client) {
+      step('pull', 'running', 'checking references in all languages');
+      try {
+        const refAdded = await ensureReferences({ project, profile, client, ws, run, localClient: localApi || null, isShipped, log: (m) => log(m) });
+        if (refAdded) log(`Added ${refAdded} include(s) for items referenced in other languages or beyond the scan.`);
+      } catch (e) { warn(`Could not check references in other languages (${e.message}).`); }
+    }
     if (wantTemplates) {
       step('pull', 'running', 'checking templates of every pulled item');
-      await getLocalApi();
       const added = await closure();
       if (added) log(`Added ${added} template include(s) found by checking every pulled item.`);
       if (unavailable.size && localApi) {
         const local = await localApi.resolveIds([...unavailable.keys()]).catch(() => null);
         if (local) dropOrphans([...unavailable.keys()].filter((t) => !local.get(t)));
       }
+    }
+    // Languages: the local CM needs a language definition for every language the content uses.
+    if (client) {
+      try {
+        const lang = await ensureLanguages({ project, profile, client, ws, run, localClient: localApi || null });
+        for (const l of lang.added) {
+          log(`Adding language ${l} to your local CM (the content has ${l} versions).`);
+          issue({ type: 'language-added', severity: 'info', path: `/sitecore/system/Languages/${l}`, detail: `Your content has ${l} versions, but your local CM didn't have the ${l} language, so it was added.`, fix: 'Nothing to do.' });
+        }
+        for (const l of lang.unknown) issue({ type: 'language-check', path: `/sitecore/system/Languages/${l}`, detail: `Your content has ${l} versions. DevSync couldn't check whether your local CM has the ${l} language.`, fix: `If ${l} content doesn't show locally, add the language in the local Control Panel (Globalization > Add a new language).` });
+        if (lang.languages && lang.languages.size > 1) log(`Pulled content languages: ${[...lang.languages.entries()].map(([l, n]) => `${l} (${n})`).join(', ')}`);
+      } catch (e) { warn(`Could not check languages (${e.message}).`); }
     }
     let pulled = countYaml(ws.itemsDir);
     step('pull', 'done', `${pulled} item file(s)`);
@@ -509,6 +572,7 @@ async function executeSync(project, profile, planned, {
         includes: planned.plan.includes.length, pulledFiles, alreadyLocal: planned.alreadyLocal || 0,
         conflicts: conflictsFound.length,
         deletedInCloud: issues.filter((i) => i.type.startsWith('deleted-in-cloud')).length,
+        changedByLanguage: planned.changedByLanguage || {},
         skippedItems: issues.filter((i) => ['orphan', 'cloud-duplicate', 'conflict-kept'].includes(i.type)).reduce((a, i) => a + (i.items || 1), 0),
       },
       issues,

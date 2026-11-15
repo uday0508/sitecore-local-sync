@@ -171,6 +171,126 @@ function dropItemsUsingTemplates(ws, templateIds) {
   return tops;
 }
 
+/**
+ * Read every pulled file and collect, across ALL languages and versions:
+ *  - ids: pulled item IDs
+ *  - refs: IDs referenced in field values (layout, links, multilists…) -> an item that uses it
+ *  - languages: language name -> number of items with versions in it
+ * Field IDs and "__Base template" (templates are handled separately) are not references.
+ */
+function readPulledContent(itemsDir) {
+  const ids = new Set();
+  const refs = new Map();
+  const languages = new Map();
+  const walk = (d) => {
+    if (!fs.existsSync(d)) return;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.name.endsWith('.yml')) continue;
+      const lines = fs.readFileSync(p, 'utf8').split(/\r?\n/);
+      let itemPath = '';
+      let hint = '';
+      let inValue = false;
+      const langsHere = new Set();
+      const add = (line) => {
+        if (/^__base template$/i.test(hint)) return;
+        for (const g of line.match(GUID) || []) { const id = normId(g); if (id !== NULL_ID && !refs.has(id)) refs.set(id, itemPath); }
+      };
+      for (const line of lines) {
+        let m;
+        if ((m = /^ID:\s*"?([0-9a-fA-F-]{36})"?/.exec(line))) { ids.add(normId(m[1])); continue; }
+        if ((m = /^Path:\s*(.+)$/.exec(line))) { itemPath = m[1].trim(); continue; }
+        if ((m = /^-\s*Language:\s*"?([^"\s]+)"?\s*$/.exec(line))) { langsHere.add(m[1]); continue; }
+        if ((m = /^\s*Hint:\s*(.+?)\s*$/.exec(line))) { hint = m[1].replace(/^["']|["']$/g, ''); inValue = false; continue; }
+        if (/^\s*-\s*ID:/.test(line)) { inValue = false; hint = ''; continue; }
+        if ((m = /^(\s*)Value:\s?(.*)$/.exec(line))) { add(m[2]); inValue = /^[|>]/.test(m[2]); continue; }
+        if (inValue && /^\s{2,}\S/.test(line)) { add(line); continue; }
+        inValue = false;
+      }
+      for (const l of langsHere) languages.set(l, (languages.get(l) || 0) + 1);
+    }
+  };
+  walk(itemsDir);
+  for (const id of ids) refs.delete(id);
+  return { ids, refs, languages };
+}
+
+/** Pull extra includes into the side workspace, copy them in, merge into the module. Returns how many were added. */
+async function pullExtra({ project, profile, ws, run, deps, tag }) {
+  const modulePath = path.join(ws.dir, 'DevSync.module.json');
+  const moduleJson = JSON.parse(fs.readFileSync(modulePath, 'utf8'));
+  const existing = moduleJson.items.includes;
+  const extra = buildPlan({ dependencies: deps, includeAncestors: true }).includes
+    .filter((x) => !existing.some((e) => normPath(e.path) === normPath(x.path) || (e.scope !== 'SingleItem' && coveredBySelection(x.path, e))))
+    .map((x, i) => ({ name: `${tag}${String(i).padStart(3, '0')}-${x.name.slice(4)}`, path: x.path, scope: x.scope, allowedPushOperations: x.allowedPushOperations }));
+  if (!extra.length) return 0;
+  const side = prepareWorkspace(project, { namespace: 'DevSync', items: { includes: extra } }, { sourceName: profile.source, dirName: 'workspace-extra' });
+  await run(side, ['sitecore', 'ser', 'pull', '-n', profile.source]);
+  for (const inc of extra) {
+    const from = path.join(side.itemsDir, inc.name);
+    if (fs.existsSync(from)) fs.cpSync(from, path.join(ws.itemsDir, inc.name), { recursive: true });
+  }
+  moduleJson.items.includes = sortIncludes([...existing, ...extra], { definitionPaths: readDefinitionPaths(modulePath) });
+  fs.writeFileSync(modulePath, JSON.stringify(moduleJson, null, 2));
+  return extra.length;
+}
+
+/**
+ * References found in ANY language version of the pulled items (e.g. a datasource used only in
+ * the fr-FR layout) are pulled too, the same way the API scan does for the default language.
+ * Content and media are pulled; renderings only when the local CM doesn't already have them.
+ */
+async function ensureReferences({ project, profile, client, ws, run, localClient = null, isShipped = () => false, log = () => {}, maxRounds = 3 }) {
+  const { classify } = require('./dependencies');
+  const attempted = new Set();
+  let added = 0;
+  for (let round = 0; round < maxRounds; round++) {
+    const { refs } = readPulledContent(ws.itemsDir);
+    const todo = [...refs.keys()].filter((id) => !attempted.has(id));
+    if (!todo.length) break;
+    todo.forEach((id) => attempted.add(id));
+    const found = await client.resolveIds(todo);
+    let candidates = todo.map((id) => ({ id, info: found.get(id) })).filter((x) => x.info)
+      .map((x) => ({ ...x, category: classify(x.info.path) }))
+      .filter((x) => ['content', 'media', 'layout'].includes(x.category) && !isShipped(x.info.path));
+    if (localClient && candidates.some((c) => c.category === 'layout')) {
+      const local = await localClient.resolveIds(candidates.filter((c) => c.category === 'layout').map((c) => c.id)).catch(() => new Map());
+      candidates = candidates.filter((c) => c.category !== 'layout' || !local.get(c.id));
+    }
+    if (!candidates.length) break;
+    const deps = candidates.map((c) => ({ path: c.info.path, category: c.category, reason: `referenced by ${refs.get(c.id)}` }));
+    log(`Pulling ${deps.length} item(s) referenced in other languages or beyond the scan: ${deps.slice(0, 5).map((d) => d.path).join(', ')}${deps.length > 5 ? '…' : ''}`);
+    added += await pullExtra({ project, profile, ws, run, deps, tag: `r${round}` });
+  }
+  return added;
+}
+
+/**
+ * Language definitions: content with fr-FR versions is invisible in a CM without a fr-FR language
+ * item. Sitecore matches versions by language NAME, so the definition's ID doesn't matter: only
+ * languages the local CM lacks entirely are pulled (create-only).
+ */
+async function ensureLanguages({ project, profile, client, ws, run, localClient = null }) {
+  const { languages } = readPulledContent(ws.itemsDir);
+  const names = [...languages.keys()];
+  if (!names.length) return { added: [], unknown: [], languages };
+  if (!localClient) return { added: [], unknown: names.filter((n) => n.toLowerCase() !== 'en'), languages };
+  const paths = names.map((n) => `/sitecore/system/Languages/${n}`);
+  const local = await localClient.resolvePaths(paths);
+  const missing = paths.filter((p) => !local.get(p));
+  if (!missing.length) return { added: [], unknown: [], languages };
+  const cloud = await client.resolvePaths(missing);
+  const deps = missing.filter((p) => cloud.get(p)).map((p) => ({ path: cloud.get(p).path || p, category: 'system', reason: 'language used by pulled content' }));
+  if (deps.length) await pullExtra({ project, profile, ws, run, deps: deps.map((d) => ({ ...d, category: 'content' })), tag: 'lang' });
+  // Language items are definitions: never overwrite one that appears meanwhile.
+  const modulePath = path.join(ws.dir, 'DevSync.module.json');
+  const mod = JSON.parse(fs.readFileSync(modulePath, 'utf8'));
+  for (const inc of mod.items.includes) if (/^\/sitecore\/system\/languages\//i.test(inc.path)) inc.allowedPushOperations = 'CreateOnly';
+  fs.writeFileSync(modulePath, JSON.stringify(mod, null, 2));
+  return { added: deps.map((d) => d.path.split('/').pop()), unknown: [], languages };
+}
+
 /** Template IDs from "Template ID <guid> did not exist" lines in CLI output. */
 function missingTemplatesFromOutput(lines) {
   const out = new Set();
@@ -181,4 +301,4 @@ function missingTemplatesFromOutput(lines) {
   return [...out];
 }
 
-module.exports = { readPulledItems, ensureTemplates, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates };
+module.exports = { readPulledItems, readPulledContent, ensureTemplates, ensureReferences, ensureLanguages, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates };

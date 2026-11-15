@@ -34,6 +34,7 @@ Save the selection as a profile, and next time flip **"Only what changed since l
 | PII masking | Blanks named fields (Email, Phone, …) and scrubs email addresses from serialized YAML *before* the push. |
 | Profiles | Save sync sets ("Homepage + Products") and reopen them with one click. They're stored per user in the data folder, not in the repo. |
 | Nothing added to your repo | All of DevSync's files (CLI workspaces, pulled items, backups, profiles, history, reports) live in its own data folder: `%LOCALAPPDATA%\DevSync\projects\<id>\` on Windows. The project's `.config/dotnet-tools.json` and `nuget.config` are copied there, so the same CLI and plugins run. Pulled item files are deleted after each sync, and the newest 5 backups are kept. The only project file DevSync touches is `.sitecore/user.json`, and only the token fields the CLI refreshed. An older `<project>/.devsync` folder is migrated, and DevSync offers to delete it. |
+| Every language | **"Only what changed"** searches for changes in every language defined in the cloud and merges the results, so an item edited only in `fr-FR` is found. SCS then pulls the item with all its languages. After the pull, references in **every language's** field values (for example a datasource used only in the `fr-FR` layout) are fetched too. A language the content uses but your local CM lacks is added (create-only); local language items are never replaced, because Sitecore matches versions by language name. The Report shows changes per language. If the cloud index can't filter by language, DevSync uses one search across languages and says so in the report. |
 | Cloud deletions and moves | After each successful sync DevSync stores a small item-ID manifest (ID → path) for the selected trees, in the data folder. Next time, an ID that is no longer in the cloud is **confirmed by a direct lookup** (the index alone is never trusted) and the local item is moved to the **Recycle Bin**. Only items DevSync synced are removed, only the top item of a deleted subtree, and only within the current selection. Items moved in the cloud are synced to their new path. Dry runs only list them. Without the local API, the report lists the IDs to delete. |
 | Sync report | Every sync, including failed ones, produces a report: status, counts, and every item that needs attention (orphaned items, duplicate cloud names, conflicts replaced or kept), each with its path, ID, template ID, what happened and **how to fix it**. It's shown in the **Report** tab, and **Save report…** saves it as HTML (to share) or CSV (for Excel). The last 20 reports are kept in the data folder. |
 | Headless CLI | `devsync run --profile "Homepage"` for scripts and onboarding. |
@@ -157,7 +158,8 @@ To let the headless CLI call the local CM's API, trust the local dev certificate
 
 - **Replace removes local work at the conflicting paths.** It goes to the local Recycle Bin, and a file backup is kept in the data folder (`backups/<time>/`). To restore, copy those files into an SCS module and push them after removing the cloud version.
 - **Deletion detection starts after the first full sync with v0.10.0** (it needs a manifest of what was synced).
-- Reference scanning (datasources and media) covers up to 1,000 items per selection and one language per profile. Templates are not limited: they are completed from the pulled files.
+- The API reference scan covers up to 1,000 items per selection in the default language. After the pull, every pulled item is checked in every language, for both references and templates, so nothing is missed.
+- A language version deleted in the cloud (while the item stays) isn't removed locally by "only what changed". A full sync re-pulls the whole item.
 - Media is pulled through SCS, so large media libraries are slow. Select media folders deliberately.
 - Delta and deep scan use the `sitecore_master_index`. If the index is stale, DevSync falls back to walking the tree.
 - The Authoring API field `hasChildren` is detected at runtime. On schemas without it, every node shows an expand arrow.
@@ -180,11 +182,5 @@ src/renderer/   UI (vanilla JS, strict CSP) + demo.js mock
 bin/devsync.js  headless CLI
 test/           node:test suites and the UI smoke test
 ```
-
-## Roadmap ideas
-
-- Content Hub asset sync (pull DAM assets referenced by local pages)
-- "Sync this page" button as a Sitecore Marketplace app that hands off to DevSync
-- Language-aware delta, scheduled background sync, VS Code extension
 
 License: Apache-2.0

@@ -426,7 +426,9 @@ function renderPlan(p) {
   const inc = p.plan.includes;
   $('planCount').textContent = inc.length;
   $('summary').replaceChildren(
-    el('div', { class: 'big-note' }, p.mode === 'delta' ? `${p.changed.length} changed item(s) since ${fmtDate(p.since)}` : `${inc.length} includes ready`),
+    el('div', { class: 'big-note' }, p.mode === 'delta'
+      ? `${p.changed.length} changed item(s) since ${fmtDate(p.since)}${p.changedByLanguage && Object.keys(p.changedByLanguage).length ? `: ${Object.entries(p.changedByLanguage).map(([l, n]) => `${l} ${n}`).join(' · ')}` : ''}`
+      : `${inc.length} includes ready`),
     ...summaryTags(p),
     p.alreadyLocal ? el('span', { class: 'tag ancestor', title: 'Sitecore defaults and your serialized items that already exist locally with the same ID' }, `${p.alreadyLocal} already on your machine`) : '',
     p.deletions && p.deletions.deleted.length ? el('span', { class: 'tag layout', title: p.deletions.deleted.map((d) => d.path).join('\n') }, `${p.deletions.deleted.length} deleted in cloud → Recycle Bin`) : '');
@@ -484,6 +486,7 @@ const TYPE_LABEL = {
   orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud',
   'conflict-replaced': 'Replaced local item', 'conflict-kept': 'Kept local item', 'conflict-pending': 'Conflict (dry run)',
   'deleted-in-cloud': 'Removed: deleted in cloud', 'deleted-in-cloud-pending': 'Deleted in cloud (dry run)', 'deleted-in-cloud-manual': 'Deleted in cloud: remove manually',
+  'language-added': 'Added language', 'language-check': 'Check language',
   notice: 'Notice', error: 'Sync stopped',
 };
 let lastReport = null;

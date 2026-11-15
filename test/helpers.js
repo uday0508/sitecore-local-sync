@@ -18,10 +18,18 @@ function fakeClient(items) {
       const it = id ? byId.get(normId(id)) : byPath.get(path.toLowerCase());
       return it ? { ...shape(it), children: childrenOf(it.path).map(shape) } : null;
     },
-    async getItemFields(id) {
+    async getItemFields(id, lang = 'en') {
       calls.fields++;
       const it = byId.get(normId(id));
-      return it ? { id: normId(it.id), path: it.path, templateId: normId(it.template || ''), fields: Object.entries(it.fields || {}).map(([name, value]) => ({ name, value })) } : null;
+      if (!it) return null;
+      const v = it.langs && Object.entries(it.langs).find(([l]) => l.toLowerCase() === String(lang).toLowerCase());
+      const fields = { ...(it.fields || {}), ...((v && v[1].fields) || {}) };
+      return { id: normId(it.id), path: it.path, templateId: normId(it.template || ''), fields: Object.entries(fields).map(([name, value]) => ({ name, value })) };
+    },
+    async listLanguages() {
+      const set = new Set(['en']);
+      for (const i of items) for (const l of Object.keys(i.langs || {})) set.add(l);
+      return [...set];
     },
     async resolvePaths(paths) {
       const m = new Map();
@@ -34,12 +42,19 @@ function fakeClient(items) {
       for (const id of ids) { const it = byId.get(normId(id)); m.set(normId(id), it ? { id: normId(it.id), name: it.path.split('/').pop(), path: it.path } : null); }
       return m;
     },
-    async searchUpdatedUnder(rootId, onPage) {
+    async searchUpdatedUnder(rootId, onPage, opts = {}) {
       calls.search++;
+      if (opts.language && items.failLanguageFilter) throw new Error('Unknown field _language');
       const root = byId.get(normId(rootId));
       const under = items.filter((i) => i.path.toLowerCase().startsWith(root.path.toLowerCase() + '/') || i === root)
-        .sort((a, b) => String(b.updated).localeCompare(String(a.updated)))
-        .map((i) => ({ id: normId(i.id), path: i.path, updated: i.updated }));
+        .map((i) => {
+          if (!opts.language) return { id: normId(i.id), path: i.path, updated: i.updated };
+          const v = i.langs && Object.entries(i.langs).find(([l]) => l.toLowerCase() === String(opts.language).toLowerCase());
+          if (v) return { id: normId(i.id), path: i.path, updated: v[1].updated || i.updated };
+          return String(opts.language).toLowerCase() === 'en' ? { id: normId(i.id), path: i.path, updated: i.updated } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
       onPage(under);
     },
   };

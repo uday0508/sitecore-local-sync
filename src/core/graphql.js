@@ -173,13 +173,19 @@ class AuthoringClient {
    * Items under rootId, newest-updated first, using the master index.
    * Calls onPage(results) and stops when onPage returns false.
    */
-  async searchUpdatedUnder(rootId, onPage, { pageSize = 100, maxPages = 50 } = {}) {
+  /**
+   * With `language`, only index documents of that language version are returned. The index keeps
+   * one document per language version, so its __Updated is that version's own date.
+   */
+  async searchUpdatedUnder(rootId, onPage, { pageSize = 100, maxPages = 50, language = null } = {}) {
+    const criteria = [`{ operator: MUST, field: "_path", value: ${JSON.stringify(normId(rootId))} }`];
+    if (language) criteria.push(`{ operator: MUST, field: "_language", value: ${JSON.stringify(String(language).toLowerCase())} }`);
     for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
       const q = `query { search(query: {
           index: "sitecore_master_index"
           sort: { field: "__smallupdateddate", direction: DESCENDING }
           paging: { pageSize: ${pageSize}, pageIndex: ${pageIndex} }
-          searchStatement: { criteria: [ { operator: MUST, field: "_path", value: ${JSON.stringify(normId(rootId))} } ] }
+          searchStatement: { criteria: [ ${criteria.join(', ')} ] }
         }) { totalCount results { innerItem { itemId path updated: field(name: "__Updated") { value } created: field(name: "__Created") { value } } } } }`;
       const data = await this.query(q);
       const results = ((data.search && data.search.results) || []).map((r) => r.innerItem).filter(Boolean).map((it) => ({
@@ -190,6 +196,13 @@ class AuthoringClient {
     }
   }
 }
+
+/** Language names defined in the CM (children of /sitecore/system/Languages). */
+AuthoringClient.prototype.listLanguages = async function listLanguages() {
+  const node = await this.getItemWithChildren({ path: '/sitecore/system/Languages' });
+  const names = ((node && node.children) || []).map((c) => c.name).filter((n) => /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/i.test(n));
+  return names.length ? names : ['en'];
+};
 
 function shapeItem(it, withChildren) {
   const node = {

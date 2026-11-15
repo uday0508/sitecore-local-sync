@@ -24,6 +24,8 @@ const TYPE_LABEL = {
   'deleted-in-cloud': 'Removed: deleted in cloud',
   'deleted-in-cloud-pending': 'Deleted in cloud (dry run)',
   'deleted-in-cloud-manual': 'Deleted in cloud: remove manually',
+  'language-added': 'Added language',
+  'language-check': 'Check language',
   notice: 'Notice',
   error: 'Sync stopped',
 };
@@ -65,7 +67,7 @@ table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:8px;bord
 <div class="meta">${esc(report.profile)} · ${esc(report.source)} → ${esc(report.target)} · ${esc(new Date(report.at).toLocaleString())} · ${esc(report.mode)}${report.dryRun ? ' (dry run)' : ''} · ${Math.round((report.durationMs || 0) / 1000)}s</div>
 <span class="status ${report.status === 'failed' ? 'fail' : report.issues.some((i) => i.severity === 'warning') ? 'warnings' : 'ok'}">${report.status === 'failed' ? 'Failed' : report.issues.some((i) => i.severity === 'warning') ? 'Completed with warnings' : 'Completed'}</span>
 ${report.error ? `<p><b>Error:</b> ${esc(report.error)}</p>` : ''}
-<div class="kpis"><div class="kpi"><b>${c.pulledFiles ?? 0}</b>items pulled</div><div class="kpi"><b>${c.includes ?? 0}</b>includes</div><div class="kpi"><b>${c.alreadyLocal ?? 0}</b>already on machine</div><div class="kpi"><b>${c.skippedItems ?? 0}</b>items skipped</div><div class="kpi"><b>${c.conflicts ?? 0}</b>conflicts</div><div class="kpi"><b>${c.deletedInCloud ?? 0}</b>deleted in cloud</div></div>
+<div class="kpis"><div class="kpi"><b>${c.pulledFiles ?? 0}</b>items pulled</div><div class="kpi"><b>${c.includes ?? 0}</b>includes</div><div class="kpi"><b>${c.alreadyLocal ?? 0}</b>already on machine</div><div class="kpi"><b>${c.skippedItems ?? 0}</b>items skipped</div><div class="kpi"><b>${c.conflicts ?? 0}</b>conflicts</div><div class="kpi"><b>${c.deletedInCloud ?? 0}</b>deleted in cloud</div>${c.changedByLanguage && Object.keys(c.changedByLanguage).length ? `<div class="kpi"><b>${Object.values(c.changedByLanguage).reduce((a, b) => a + b, 0)}</b>changed: ${esc(Object.entries(c.changedByLanguage).map(([l, n]) => `${l} ${n}`).join(' · '))}</div>` : ''}</div>
 ${report.issues.length ? `<table><thead><tr><th>Type</th><th>Path</th><th>ID</th><th>What happened</th><th>How to fix</th></tr></thead><tbody>${rows}</tbody></table>` : '<p>No items needed attention.</p>'}
 </body></html>`;
 }

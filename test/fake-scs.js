@@ -67,6 +67,14 @@ if (op === 'pull') {
       let y = `---\nID: "${it.id}"\nTemplate: "${it.template || 'ffffffff-ffff-ffff-ffff-ffffffffffff'}"\nPath: ${it.path}\n`;
       if (it.fields && it.fields['__Base template']) y += `SharedFields:\n- ID: "12c33f3f-86c5-43a5-aeb4-5598cec45116"\n  Hint: __Base template\n  Value: "${it.fields['__Base template']}"\n`;
       if (it.fields && it.fields.Email) y += `${it.fields['__Base template'] ? '' : 'SharedFields:\n'}- ID: "e"\n  Hint: Email\n  Value: ${it.fields.Email}\n`;
+      const shared = Object.entries(it.fields || {}).filter(([k]) => k !== '__Base template' && k !== 'Email');
+      const langs = { en: { fields: {} }, ...(it.langs || {}) };
+      if (shared.length) langs.en = { ...langs.en, fields: { ...Object.fromEntries(shared), ...((langs.en && langs.en.fields) || {}) } };
+      y += 'Languages:\n';
+      for (const [l, v] of Object.entries(langs)) {
+        y += `- Language: ${l}\n  Versions:\n  - Version: 1\n    Fields:\n`;
+        for (const [k, val] of Object.entries(v.fields || {})) y += `    - ID: "${'f'.repeat(8)}-0000-0000-0000-000000000000"\n      Hint: ${k}\n      Value: ${JSON.stringify(String(val))}\n`;
+      }
       fs.writeFileSync(path.join(d, `${i}.yml`), y);
       n++;
     });

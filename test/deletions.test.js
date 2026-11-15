@@ -134,3 +134,19 @@ test('an item already deleted locally is skipped quietly', async () => {
   assert.equal(w.sim.api.calls.length, 0);
   assert.equal(r.report.issues.filter((i) => i.type.startsWith('deleted-in-cloud')).length, 0);
 });
+
+test('delta with no changed content still applies cloud deletions and writes a report', async () => {
+  const w = await world('nochange');
+  await w.sync();
+  w.setCloud(without(w.cloud(), G(84), G(85)));
+  // Nothing else changed after the "since" date: use a date after every updated value.
+  const dir = w.dir;
+  const profile = require('../src/core/profiles').listProfiles(dir).find((p) => p.name === 'nochange');
+  const c = fakeClient(w.cloud());
+  const planned = await planSync(c, profile, { mode: 'delta', projectRoot: dir, localClient: w.sim.api, since: '2030-01-01T00:00:00Z' });
+  assert.equal(planned.plan.includes.length, 0);
+  const r = await executeSync(loadProject(dir), profile, planned, { client: c, dotnet: w.sim.dotnet, localClient: w.sim.api });
+  assert.equal(w.sim.at('/sitecore/content/Tenant/Site/Home/Old Campaign'), undefined);
+  assert.equal(r.report.counts.deletedInCloud, 1);
+  assert.ok(!loadManifest(dir, 'nochange').items[G(84).replace(/-/g, '')]);
+});

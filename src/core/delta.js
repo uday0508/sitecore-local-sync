@@ -4,31 +4,50 @@ const { parseSitecoreDate, pLimit } = require('./util');
 const { coveredBySelection } = require('./dependencies');
 
 /**
- * Find items under the selections that changed in the cloud after `since`.
- * Primary: master-index search sorted by updated date (fast, stops at the first old item).
- * Fallback: walk the tree with the Authoring API (slower, capped).
- *
- * Limitation: items deleted in the cloud are not detected. Run a full sync now and then.
+ * Find items under the selections that changed in the cloud after `since`, in ANY language.
+ * The index holds one document per language version, each with its own __Updated, so DevSync
+ * searches once per language (plus once unfiltered) and merges. An item changed only in fr-FR
+ * is found even if its English version is untouched. SCS then pulls the item with all its
+ * languages. If the index can't filter by language, the unfiltered search is used and a notice
+ * is returned.
+ * Fallback when search fails entirely: walk the tree with the Authoring API (slower, capped).
+ * Deletions and moves are detected separately, with the item-ID manifest.
  */
-async function findChangedItems(client, selections, since, { maxItems = 2000, log = () => {} } = {}) {
+async function findChangedItems(client, selections, since, { maxItems = 2000, log = () => {}, languages = null, notices = [] } = {}) {
   const sinceDate = since instanceof Date ? since : new Date(since);
   const changed = new Map();
+  const note = (id, it, lang) => {
+    const prev = changed.get(id);
+    const langs = new Set(prev ? prev.languages : []);
+    if (lang) langs.add(lang);
+    changed.set(id, { id, path: it.path, updated: prev && prev.updated > it.updated ? prev.updated : it.updated, languages: [...langs] });
+  };
+  let languageFilterWorks = true;
   for (const s of selections) {
     if (s.scope === 'SingleItem') {
       const it = await client.getItemWithChildren({ id: s.id });
-      if (it && isAfter(it.updated, sinceDate)) changed.set(it.id, { id: it.id, path: it.path, updated: it.updated });
+      if (it && isAfter(it.updated, sinceDate)) note(it.id, it, null);
       continue;
     }
+    const scan = (lang) => client.searchUpdatedUnder(s.id, (page) => {
+      let sawOld = false;
+      for (const it of page) {
+        const d = parseSitecoreDate(it.updated);
+        if (!d || d <= sinceDate) { sawOld = true; continue; }
+        if (coveredBySelection(it.path, s)) note(it.id, it, lang);
+      }
+      return !sawOld && changed.size < maxItems;
+    }, lang ? { language: lang } : {});
     try {
-      await client.searchUpdatedUnder(s.id, (page) => {
-        let sawOld = false;
-        for (const it of page) {
-          const d = parseSitecoreDate(it.updated);
-          if (!d || d <= sinceDate) { sawOld = true; continue; }
-          if (coveredBySelection(it.path, s)) changed.set(it.id, it);
+      await scan(null);
+      for (const lang of languages || []) {
+        if (!languageFilterWorks) break;
+        try { await scan(lang); } catch (e) {
+          languageFilterWorks = false;
+          notices.push(`The cloud index could not filter by language (${e.message}). Changes were detected with a single search across languages.`);
+          log(notices[notices.length - 1]);
         }
-        return !sawOld && changed.size < maxItems;
-      });
+      }
     } catch (e) {
       log(`Index search failed for ${s.path} (${e.message}). Walking the tree instead.`);
       await walk(client, s, sinceDate, changed, maxItems);
