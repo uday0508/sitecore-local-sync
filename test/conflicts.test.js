@@ -12,7 +12,7 @@ const { fakeClient, sampleTree, tempProject, scsSim, withFolders, G } = require(
 
 const HOME = { id: G(3), path: '/sitecore/content/Tenant/Site/Home', scope: 'ItemAndDescendants' };
 const L = (n) => `${String(n).padStart(8, '0')}-1111-1111-1111-111111111111`; // local-only IDs
-const SYSTEM = [{ id: G(199), path: '/sitecore/templates/System/Templates/Standard template' }, { id: G(198), path: '/sitecore/templates/System/Templates/Folder' }];
+const SYSTEM = [{ id: G(199), path: '/sitecore/templates/System/Templates/Standard template' }, { id: G(198), path: '/sitecore/templates/System/Templates/Folder' }, { id: G(196), path: '/sitecore/templates/System/Templates/Template' }];
 // The local CM has the template + content roots that every SitecoreAI CM has.
 const LOCAL_TEMPLATES = [
   { id: G(100), path: '/sitecore/templates/Project/Site/Page' },
@@ -362,3 +362,29 @@ test('a local folder at the same path but with another ID is NOT skipped (it goe
   assert.deepEqual(r.conflicts.map((c) => c.path), ['/sitecore/content/Tenant/Site']);
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site').id, G(2));
 });
+
+// ---- Orphans: items whose template was deleted in the cloud ----
+function orphanCloud() {
+  return withFolders([...sampleTree(), { id: G(198), path: '/sitecore/templates/System/Templates/Folder' },
+    { id: G(80), path: '/sitecore/content/Tenant/Site/Home/Products', template: G(100) },
+    { id: G(81), path: '/sitecore/content/Tenant/Site/Home/Products/Data', template: G(103) },
+    { id: G(82), path: '/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links', template: 'af8c3de5-068c-4bc4-b178-90e29168da29' },
+    { id: G(83), path: '/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links/AboutUs', template: '2861b653-214e-412f-b017-d5e7bf1271f8' },
+  ]); // neither template exists anywhere
+}
+
+for (const withApi of [true, false]) {
+  test(`your case: "Quick Links" uses a template deleted in the cloud -> skipped with a warning, everything else syncs (${withApi ? 'local API' : 'no local API'})`, async () => {
+    const s = await setup(`orphan-${withApi}`, { cloud: orphanCloud() });
+    const r = await s.go(withApi ? { localClient: s.sim.api } : {});
+    assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links'), undefined);
+    assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links/AboutUs'), undefined);
+    assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Products/Data').id, G(81), 'its parent still synced');
+    assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Data/Text 1').id, G(5), 'the rest synced');
+    assert.deepEqual(r.orphans.map((o) => o.path), ['/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links']);
+    assert.ok(r.warnings.some((w) => /Quick Links.*af8c3de5068c4bc4b17890e29168da29.*orphaned/.test(w)));
+    const pushes = fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('push')).length;
+    assert.equal(pushes, withApi ? 1 : 2, withApi ? 'left out before the push' : 'found by the push, left out, retried');
+    assert.ok(getLastSync(s.dir, `orphan-${withApi}`));
+  });
+}

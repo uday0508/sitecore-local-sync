@@ -61,7 +61,7 @@ function readPulledItems(itemsDir) {
  * forceIds: template IDs the local CM reported as missing. These are pulled even if they
  * live under a "built-in" path.
  */
-async function ensureTemplates({ project, profile, client, ws, run, log = () => {}, forceIds = [], maxRounds = 6, localClient = null, isShipped = () => false }) {
+async function ensureTemplates({ project, profile, client, ws, run, log = () => {}, forceIds = [], maxRounds = 6, localClient = null, isShipped = () => false, unavailable = new Map() }) {
   const modulePath = path.join(ws.dir, 'DevSync.module.json');
   const attempted = new Set();
   const forced = new Set(forceIds.map(normId));
@@ -86,7 +86,7 @@ async function ensureTemplates({ project, profile, client, ws, run, log = () => 
     const deps = [];
     for (const t of missing) {
       const info = resolved.get(t);
-      if (!info) { log(`Template ${t} (needed by ${templateRefs.get(t) || 'the local CM'}) was not found in the cloud environment either.`, 'warn'); continue; }
+      if (!info) { unavailable.set(t, templateRefs.get(t) || 'the local CM'); continue; }
       if (!forced.has(t) && (BUILT_IN.some((r) => isSameOrUnder(info.path, r)) || isShipped(info.path))) continue; // ships with every CM
       deps.push({ path: info.path, category: 'template', reason: forced.has(t) ? 'reported missing by local CM' : `needed by ${templateRefs.get(t)}` });
     }
@@ -125,6 +125,45 @@ function writeDefinitionPaths(modulePath, list) {
   fs.writeFileSync(modulePath.replace(/\.module\.json$/, '.definitions.json'), JSON.stringify(list, null, 2));
 }
 
+/**
+ * Items whose template exists in neither the cloud nor the local CM are orphans: the template
+ * was deleted, but the item still points to it. SCS can't push them. Leave them (and their
+ * subtrees) out so the rest of the sync goes through, and return what was left out.
+ */
+function dropItemsUsingTemplates(ws, templateIds) {
+  const ids = new Set([...templateIds].map(normId));
+  const modulePath = path.join(ws.dir, 'DevSync.module.json');
+  const files = [];
+  const walk = (d) => {
+    if (!fs.existsSync(d)) return;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.name.endsWith('.yml')) continue;
+      const text = fs.readFileSync(p, 'utf8');
+      const ip = /^Path:\s*(.+)$/m.exec(text);
+      const t = /^Template:\s*"?([0-9a-fA-F-]{36})"?/m.exec(text);
+      files.push({ file: p, path: ip ? ip[1].trim() : '', template: t ? normId(t[1]) : '' });
+    }
+  };
+  walk(ws.itemsDir);
+  // Only content-type items are ever left out. Dropping a template or rendering would just move
+  // the failure onto everything that uses it.
+  const isDefinition = (p) => /^\/sitecore\/(templates|layout)(\/|$)/i.test(p);
+  const roots = files.filter((f) => ids.has(f.template) && !isDefinition(f.path)).map((f) => ({ path: f.path, template: f.template }));
+  if (!roots.length) return [];
+  for (const f of files) if (roots.some((r) => isSameOrUnder(f.path, r.path))) fs.rmSync(f.file, { force: true });
+  const mod = JSON.parse(fs.readFileSync(modulePath, 'utf8'));
+  mod.items.includes = mod.items.includes.filter((inc) => {
+    const inside = roots.some((r) => isSameOrUnder(inc.path, r.path));
+    if (inside) fs.rmSync(path.join(ws.itemsDir, inc.name), { recursive: true, force: true });
+    return !inside;
+  });
+  fs.writeFileSync(modulePath, JSON.stringify(mod, null, 2));
+  // Report only the top of each dropped subtree.
+  return roots.filter((r) => !roots.some((o) => o !== r && isSameOrUnder(r.path, o.path) && normPath(r.path) !== normPath(o.path)));
+}
+
 /** Template IDs from "Template ID <guid> did not exist" lines in CLI output. */
 function missingTemplatesFromOutput(lines) {
   const out = new Set();
@@ -135,4 +174,4 @@ function missingTemplatesFromOutput(lines) {
   return [...out];
 }
 
-module.exports = { readPulledItems, ensureTemplates, missingTemplatesFromOutput, writeDefinitionPaths };
+module.exports = { readPulledItems, ensureTemplates, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates };

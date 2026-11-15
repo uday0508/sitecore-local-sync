@@ -18,7 +18,7 @@ const {
   batchParents, cleanupModule, skipInWorkspace, ignorePathInModule, parentPath,
 } = require('./conflicts');
 const { getLastSync, setLastSync } = require('./profiles');
-const { ensureTemplates, missingTemplatesFromOutput, writeDefinitionPaths } = require('./closure');
+const { ensureTemplates, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates } = require('./closure');
 
 /** Build a read-only Authoring API client for the source (cloud) endpoint. */
 function createSourceClient(project, sourceName, auth = {}, { fetchImpl = fetch, log } = {}) {
@@ -293,7 +293,20 @@ async function executeSync(project, profile, planned, {
   };
 
   const wantTemplates = !!client;
-  const closure = (forceIds = []) => ensureTemplates({ project, profile, client, ws, run, log: (m, l) => log(m, l), forceIds, localClient: localApi || null, isShipped });
+  const unavailable = new Map(); // template id -> an item that needs it; exists in neither cloud nor local
+  const closure = (forceIds = []) => ensureTemplates({ project, profile, client, ws, run, log: (m, l) => log(m, l), forceIds, localClient: localApi || null, isShipped, unavailable });
+  const orphans = [];
+  const dropOrphans = (templateIds) => {
+    const dropped = dropItemsUsingTemplates(ws, templateIds);
+    if (!dropped.length) return 0;
+    orphans.push(...dropped);
+    const byTpl = new Map();
+    for (const d of dropped) byTpl.set(d.template, [...(byTpl.get(d.template) || []), d.path]);
+    for (const [t, paths] of byTpl) {
+      warn(`Skipped ${paths.join(', ')} (and anything under it): it uses template ${t}, which doesn't exist in the cloud environment, so the item is orphaned there. To fix: in the cloud Content Editor, search for ${t}. If nothing is found, the template was deleted, so change that item's template or delete the item.`);
+    }
+    return dropped.length;
+  };
   let conflictsFound = [];
   let decisionTaken = null;
 
@@ -317,6 +330,10 @@ async function executeSync(project, profile, planned, {
       await getLocalApi();
       const added = await closure();
       if (added) log(`Added ${added} template include(s) found by checking every pulled item.`);
+      if (unavailable.size && localApi) {
+        const local = await localApi.resolveIds([...unavailable.keys()]).catch(() => null);
+        if (local) dropOrphans([...unavailable.keys()].filter((t) => !local.get(t)));
+      }
     }
     let pulled = countYaml(ws.itemsDir);
     step('pull', 'done', `${pulled} item file(s)`);
@@ -377,7 +394,10 @@ async function executeSync(project, profile, planned, {
             log(`Local CM is missing template(s) ${ids.join(', ')}. Pulling them and retrying.`, 'warn');
             step('push', 'running', 'adding missing templates');
             const added = await closure(ids);
-            if (!added) { e.message = `Local CM is missing template(s) ${ids.join(', ')}, and they could not be found in the cloud. ${e.message}`; throw e; }
+            if (!added) {
+              const dropped = dropOrphans(ids);
+              if (!dropped) { e.message = `Local CM is missing template(s) ${ids.join(', ')}, and they don't exist in the cloud either. ${e.message}`; throw e; }
+            }
           } else if (cols.length) {
             const cloudTree = readTree(ws.itemsDir);
             const fresh = cols.map((c) => conflictFromCollision(c, cloudTree))
@@ -403,7 +423,7 @@ async function executeSync(project, profile, planned, {
     if (!skipPush) setLastSync(project.root, profile.name || 'adhoc', startedAt, { includes: planned.plan.includes.length, items: pulled, mode: planned.mode });
     writeRunReport(ws, planned, pulled, { conflicts: conflictsFound, decision: decisionTaken, warnings });
     emit({ type: 'done', pulled, conflicts: conflictsFound.length, warnings });
-    return { pulled, workspace: ws.dir, conflicts: conflictsFound, decision: decisionTaken, warnings };
+    return { pulled, workspace: ws.dir, conflicts: conflictsFound, decision: decisionTaken, warnings, orphans };
   } catch (e) {
     emit({ type: 'error', message: e.message });
     throw e;

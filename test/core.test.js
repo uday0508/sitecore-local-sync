@@ -359,14 +359,14 @@ test('if the local CM still reports a missing template, DevSync pulls it and ret
   assert.ok(getLastSync(dir, 'Odd'));
 });
 
-test('a template missing in the cloud too gives a clear error naming it', async () => {
-  const tree = bigTree().filter((i) => i.id !== G(112)); // template exists nowhere
+test('an item whose template exists nowhere (orphan) is left out with a clear warning; the rest syncs', async () => {
+  const tree = bigTree().filter((i) => i.id !== G(112)); // template deleted in the cloud
   const dir = tempProject();
   const project = loadProject(dir);
   const client = fakeClient(tree);
   const profile = saveProfile(dir, { name: 'Gone', source: 'prod', target: 'local', selections: [HOME], dependencies: {} });
   const planned = await planSync(client, profile, { projectRoot: dir });
-  await assert.rejects(
-    executeSync(project, profile, planned, { client, dotnet: fakeDotnetTree(tree, { localTemplates: SYSTEM_TEMPLATES }) }),
-    /missing template\(s\) 00000112/);
+  const r = await executeSync(project, profile, planned, { client, dotnet: fakeDotnetTree(tree, { localTemplates: SYSTEM_TEMPLATES }) });
+  assert.deepEqual(r.orphans.map((o) => o.path), ['/sitecore/content/Tenant/Site/Home/About/Odd']);
+  assert.ok(r.warnings.some((w) => /00000112.*doesn't exist in the cloud/.test(w)));
 });

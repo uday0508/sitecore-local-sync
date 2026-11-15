@@ -229,7 +229,9 @@ module.exports.scsSim = scsSim;
 
 /** Add the folder items a real tree has between /sitecore/<root> and each item. */
 function withFolders(items, folderTemplate = G(198)) {
-  const out = items.map((i) => (i.template || /^\/sitecore\/templates\//i.test(i.path) ? i : { ...i, template: folderTemplate }));
+  const TEMPLATE_TPL = G(196); // /sitecore/templates/System/Templates/Template
+  const out = items.map((i) => (i.template ? i : /^\/sitecore\/templates\//i.test(i.path) ? { ...i, template: TEMPLATE_TPL } : { ...i, template: folderTemplate }));
+  if (!out.some((i) => i.id === TEMPLATE_TPL)) out.push({ id: TEMPLATE_TPL, path: '/sitecore/templates/System/Templates/Template', template: TEMPLATE_TPL });
   const have = new Set(out.map((i) => i.path.toLowerCase()));
   let n = 0;
   for (const it of items) {
