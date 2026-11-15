@@ -221,6 +221,7 @@ function scsSim({ cloud, local = [], localDown = false }) {
   return {
     dotnet,
     api,
+    setCloud: (items) => fs.writeFileSync(cfgFile, JSON.stringify({ cloud: items, localDbFile, cloudEnvs: ['prod'], localDown })),
     local: () => JSON.parse(fs.readFileSync(localDbFile, 'utf8')),
     at: (p) => JSON.parse(fs.readFileSync(localDbFile, 'utf8')).find((i) => i.path.toLowerCase() === p.toLowerCase()),
   };

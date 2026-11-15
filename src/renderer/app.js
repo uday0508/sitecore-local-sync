@@ -428,7 +428,8 @@ function renderPlan(p) {
   $('summary').replaceChildren(
     el('div', { class: 'big-note' }, p.mode === 'delta' ? `${p.changed.length} changed item(s) since ${fmtDate(p.since)}` : `${inc.length} includes ready`),
     ...summaryTags(p),
-    p.alreadyLocal ? el('span', { class: 'tag ancestor', title: 'Sitecore defaults and your serialized items that already exist locally with the same ID' }, `${p.alreadyLocal} already on your machine`) : '');
+    p.alreadyLocal ? el('span', { class: 'tag ancestor', title: 'Sitecore defaults and your serialized items that already exist locally with the same ID' }, `${p.alreadyLocal} already on your machine`) : '',
+    p.deletions && p.deletions.deleted.length ? el('span', { class: 'tag layout', title: p.deletions.deleted.map((d) => d.path).join('\n') }, `${p.deletions.deleted.length} deleted in cloud → Recycle Bin`) : '');
   const rows = inc.map((i) => el('tr', {},
     el('td', {}, el('span', { class: `tag ${i.kind}` }, label(i.kind, 1))),
     el('td', { class: 'path', title: i.reason }, i.path),
@@ -482,6 +483,7 @@ function showTab(name) {
 const TYPE_LABEL = {
   orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud',
   'conflict-replaced': 'Replaced local item', 'conflict-kept': 'Kept local item', 'conflict-pending': 'Conflict (dry run)',
+  'deleted-in-cloud': 'Removed: deleted in cloud', 'deleted-in-cloud-pending': 'Deleted in cloud (dry run)', 'deleted-in-cloud-manual': 'Deleted in cloud: remove manually',
   notice: 'Notice', error: 'Sync stopped',
 };
 let lastReport = null;
@@ -496,7 +498,7 @@ function renderReport(rep) {
   box.replaceChildren(
     el('div', { class: 'report-head' },
       el('span', { class: `badge ${status[0]}` }, status[1]),
-      el('span', { class: 'hint grow' }, `${fmtDate(rep.at)} · ${rep.source} → ${rep.target}${rep.dryRun ? ' · dry run' : ''} · ${c.pulledFiles || 0} pulled · ${c.alreadyLocal || 0} already on machine · ${c.skippedItems || 0} skipped`),
+      el('span', { class: 'hint grow' }, `${fmtDate(rep.at)} · ${rep.source} → ${rep.target}${rep.dryRun ? ' · dry run' : ''} · ${c.pulledFiles || 0} pulled · ${c.alreadyLocal || 0} already on machine · ${c.skippedItems || 0} skipped · ${c.deletedInCloud || 0} deleted in cloud`),
       el('button', { class: 'btn small', onclick: saveReport }, 'Save report…')),
     rep.issues.length
       ? el('table', { class: 'plan report' },

@@ -34,6 +34,7 @@ Save the selection as a profile, and next time flip **"Only what changed since l
 | PII masking | Blanks named fields (Email, Phone, …) and scrubs email addresses from serialized YAML *before* the push. |
 | Profiles | Save sync sets ("Homepage + Products") and reopen them with one click. They're stored per user in the data folder, not in the repo. |
 | Nothing added to your repo | All of DevSync's files (CLI workspaces, pulled items, backups, profiles, history, reports) live in its own data folder: `%LOCALAPPDATA%\DevSync\projects\<id>\` on Windows. The project's `.config/dotnet-tools.json` and `nuget.config` are copied there, so the same CLI and plugins run. Pulled item files are deleted after each sync, and the newest 5 backups are kept. The only project file DevSync touches is `.sitecore/user.json`, and only the token fields the CLI refreshed. An older `<project>/.devsync` folder is migrated, and DevSync offers to delete it. |
+| Cloud deletions and moves | After each successful sync DevSync stores a small item-ID manifest (ID → path) for the selected trees, in the data folder. Next time, an ID that is no longer in the cloud is **confirmed by a direct lookup** (the index alone is never trusted) and the local item is moved to the **Recycle Bin**. Only items DevSync synced are removed, only the top item of a deleted subtree, and only within the current selection. Items moved in the cloud are synced to their new path. Dry runs only list them. Without the local API, the report lists the IDs to delete. |
 | Sync report | Every sync, including failed ones, produces a report: status, counts, and every item that needs attention (orphaned items, duplicate cloud names, conflicts replaced or kept), each with its path, ID, template ID, what happened and **how to fix it**. It's shown in the **Report** tab, and **Save report…** saves it as HTML (to share) or CSV (for Excel). The last 20 reports are kept in the data folder. |
 | Headless CLI | `devsync run --profile "Homepage"` for scripts and onboarding. |
 | Demo mode | Open `src/renderer/index.html` in a browser for a working demo with sample data. |
@@ -155,7 +156,7 @@ To let the headless CLI call the local CM's API, trust the local dev certificate
 ## Known limitations (v0.1)
 
 - **Replace removes local work at the conflicting paths.** It goes to the local Recycle Bin, and a file backup is kept in the data folder (`backups/<time>/`). To restore, copy those files into an SCS module and push them after removing the cloud version.
-- **Deletions in the cloud aren't picked up by delta sync.** Run a full sync now and then (in Mirror mode to remove stale local items).
+- **Deletion detection starts after the first full sync with v0.10.0** (it needs a manifest of what was synced).
 - Reference scanning (datasources and media) covers up to 1,000 items per selection and one language per profile. Templates are not limited: they are completed from the pulled files.
 - Media is pulled through SCS, so large media libraries are slow. Select media folders deliberately.
 - Delta and deep scan use the `sitecore_master_index`. If the index is stale, DevSync falls back to walking the tree.
@@ -185,6 +186,5 @@ test/           node:test suites and the UI smoke test
 - Content Hub asset sync (pull DAM assets referenced by local pages)
 - "Sync this page" button as a Sitecore Marketplace app that hands off to DevSync
 - Language-aware delta, scheduled background sync, VS Code extension
-- Detect cloud deletions via a lightweight item-ID manifest
 
 License: Apache-2.0

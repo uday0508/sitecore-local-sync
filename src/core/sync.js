@@ -13,6 +13,7 @@ const { maskDirectory, DEFAULT_MASK_OPTIONS } = require('./mask');
 const { prepareWorkspace, assertSafeTargets, runCli, syncTokensBack, pushTokensInto, countYaml } = require('./workspace');
 const { explainCliFailure } = require('./cliErrors');
 const { saveReport } = require('./report');
+const { loadManifest, saveManifest, itemsFromPulled, detectAfterPull, detectByIndex, mergeAfterDelta } = require('./manifest');
 const { normPath } = require('./util');
 const {
   readTree, findConflicts, collisionsFromOutput, conflictFromCollision, backupConflicts,
@@ -122,6 +123,7 @@ async function planSync(client, profile, { mode = 'full', projectRoot, since, lo
   const depOpts = { ...DEFAULT_DEP_OPTIONS, ...(profile.dependencies || {}), templates: true, renderings: true, datasources: true, media: true, projectOnly: false, languages: [profile.language || 'en'] };
 
   let changed = null;
+  let deletions = null;
   let scanSet = profile.selections;
   let sinceUsed = null;
   if (mode === 'delta') {
@@ -130,6 +132,15 @@ async function planSync(client, profile, { mode = 'full', projectRoot, since, lo
     log(`Looking for items changed since ${sinceUsed}`);
     changed = await findChangedItems(client, profile.selections, sinceUsed, { log });
     log(`${changed.length} changed item(s) found`);
+    const manifest = projectRoot && loadManifest(projectRoot, profile.name);
+    if (manifest) {
+      try {
+        deletions = await detectByIndex(client, manifest, profile.selections, { log });
+        for (const m of deletions.moved) if (!changed.some((c) => c.id === m.id)) changed.push({ id: m.id, path: m.path, updated: 'moved' });
+        if (deletions.deleted.length) log(`${deletions.deleted.length} item(s) were deleted in the cloud since the last sync.`);
+        if (deletions.moved.length) log(`${deletions.moved.length} item(s) were moved in the cloud; they will be synced to their new location.`);
+      } catch (e) { log(`Could not check for cloud deletions (${e.message}).`); deletions = null; }
+    }
     scanSet = changed.map((c) => ({ id: c.id, path: c.path, scope: 'SingleItem' }));
   }
 
@@ -158,6 +169,7 @@ async function planSync(client, profile, { mode = 'full', projectRoot, since, lo
     dependencies: deps.dependencies.filter((d) => !alreadyLocal.has(d.path.toLowerCase())),
     skipped: [...deps.skipped, ...dropped.map((d) => ({ path: d.path, category: d.kind, why: 'already on your machine' }))],
     alreadyLocal: dropped.length,
+    deletions,
   };
 }
 
@@ -350,6 +362,18 @@ async function executeSync(project, profile, planned, {
     let pulled = countYaml(ws.itemsDir);
     step('pull', 'done', `${pulled} item file(s)`);
 
+    // Cloud deletions: compare with the item-ID manifest of the last successful sync.
+    const manifest = loadManifest(project.root, profile.name);
+    let deletions = planned.deletions || null;
+    if (!deletions && manifest && client && planned.mode !== 'delta') {
+      try { deletions = await detectAfterPull(client, manifest, ws.itemsDir, profile.selections); }
+      catch (e) { warn(`Could not check for cloud deletions (${e.message}).`); }
+    }
+    if (planned.mode === 'delta' && !manifest) log('Deletion detection starts after your next full sync (it needs a list of previously synced items).');
+    if (deletions && deletions.deleted.length) {
+      log(`${deletions.deleted.length} previously synced item(s) no longer exist in the cloud: ${deletions.deleted.map((d) => d.path).join(', ')}`, 'warn');
+    }
+
     // 3. Mask personal data before anything reaches the local CM.
     const maskOpts = { ...DEFAULT_MASK_OPTIONS, ...(profile.mask || {}) };
     if (maskOpts.enabled) {
@@ -395,6 +419,7 @@ async function executeSync(project, profile, planned, {
     if (skipPush) {
       step('push', 'skipped', 'dry run: nothing changed locally');
       if (conflictsFound.length) warn(`Dry run: ${conflictsFound.length} conflict(s) would need a decision (replace or skip) on a real sync.`);
+      for (const d of (deletions && deletions.deleted) || []) issue({ type: 'deleted-in-cloud-pending', severity: 'info', path: d.path, id: d.id, items: d.items, detail: 'Deleted in the cloud since the last sync.', fix: 'A real sync will move it to your local Recycle Bin.' });
       for (const c of conflictsFound) issue({ type: 'conflict-pending', severity: 'info', path: c.path, id: c.localId, items: c.localItems, detail: `Local item ${c.localId} has the same path as cloud item ${c.cloudId}.`, fix: 'On a real sync you\'ll be asked to replace the local item or keep it.' });
     } else {
       step('push', 'running', profile.target);
@@ -431,6 +456,34 @@ async function executeSync(project, profile, planned, {
         }
       }
       step('push', 'done');
+
+      // Apply cloud deletions locally: only items DevSync synced (same ID), to the Recycle Bin.
+      if (deletions && deletions.deleted.length) {
+        step('push', 'running', 'removing items deleted in the cloud');
+        const api = await getLocalApi();
+        for (const d of deletions.deleted) {
+          const extra = d.items > 1 ? ` (with ${d.items - 1} item(s) under it)` : '';
+          if (!api) {
+            issue({ type: 'deleted-in-cloud-manual', path: d.path, id: d.id, items: d.items, detail: `Deleted in the cloud since the last sync${extra}, but still on your machine. DevSync couldn't reach the local CM's API to remove it.`, fix: `Delete item ${d.id} in your local Content Editor.` });
+            continue;
+          }
+          try {
+            const local = await api.resolveIds([d.id]);
+            if (!local.get(d.id)) continue; // already gone locally
+            await api.deleteItem(d.id);
+            log(`Deleted in the cloud: moved local ${d.path}${extra} to the local Recycle Bin.`);
+            issue({ type: 'deleted-in-cloud', severity: 'info', path: d.path, id: d.id, items: d.items, detail: `Deleted in the cloud since the last sync${extra}, so it was moved to your local Recycle Bin.`, fix: 'Nothing to do. To keep it, restore it from the Recycle Bin in the local Content Editor.' });
+          } catch (e) {
+            issue({ type: 'deleted-in-cloud-manual', path: d.path, id: d.id, items: d.items, detail: `Deleted in the cloud, but removing it locally failed (${e.message}).`, fix: `Delete item ${d.id} in your local Content Editor.` });
+          }
+        }
+        step('push', 'done');
+      }
+      // Remember what is now synced, for the next deletion check.
+      const next = planned.mode === 'delta'
+        ? (manifest ? mergeAfterDelta(manifest, { deletedAll: (deletions && deletions.deletedAll) || [], changed: planned.changed || [], moved: (deletions && deletions.moved) || [] }, profile.selections) : null)
+        : { items: itemsFromPulled(ws.itemsDir, profile.selections) };
+      if (next) saveManifest(project.root, profile.name || 'Quick sync', next);
     }
 
     if (!skipPush) setLastSync(project.root, profile.name || 'adhoc', startedAt, { includes: planned.plan.includes.length, items: pulled, mode: planned.mode });
@@ -454,7 +507,9 @@ async function executeSync(project, profile, planned, {
       mode: planned.mode, dryRun: !!skipPush,
       counts: {
         includes: planned.plan.includes.length, pulledFiles, alreadyLocal: planned.alreadyLocal || 0,
-        conflicts: conflictsFound.length, skippedItems: issues.filter((i) => ['orphan', 'cloud-duplicate', 'conflict-kept'].includes(i.type)).reduce((a, i) => a + (i.items || 1), 0),
+        conflicts: conflictsFound.length,
+        deletedInCloud: issues.filter((i) => i.type.startsWith('deleted-in-cloud')).length,
+        skippedItems: issues.filter((i) => ['orphan', 'cloud-duplicate', 'conflict-kept'].includes(i.type)).reduce((a, i) => a + (i.items || 1), 0),
       },
       issues,
     };
