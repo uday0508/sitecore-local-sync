@@ -24,7 +24,7 @@ Save the selection as a profile, and next time flip **"Only what changed since l
 | Orphaned items don't block the sync | An item whose template exists in neither the cloud nor the local CM can't be pushed by SCS. DevSync leaves it out (with everything under it), syncs the rest, and tells you which item and template ID. Templates and renderings are never left out. |
 | Templates anywhere | Any item used as a template (or listed in `__Base template`) is treated as a template, even outside `/sitecore/templates` (for example generated component templates), and is pushed before the content that uses it. The null ID `{00000000-…}` that SXA/JSS base templates use for "no base" is ignored. If the API rejects a batch of lookups, IDs are resolved one by one, then with a language, then through the search index. |
 | Templates are always complete | After the pull, DevSync reads the template ID of **every pulled item** (and the base templates of every pulled template) and fetches anything missing before pushing. Scan limits can't cause "Template ID … did not exist". If the local CM still reports a missing template, DevSync pulls that exact template and retries the push automatically (up to 3 times). |
-| Handles "same path, different ID" | When a local site or folder was created separately from the cloud one, SCS refuses to push (*"attempted to be cached … with different ID. Non-unique paths cannot be serialized"*). Before pushing, DevSync pulls a snapshot of the same paths from your local CM, finds every conflict (reported at the topmost path), and asks: **Replace local** (local subtree backed up to `.devsync/backups/<time>/`, then removed) or **Keep local, skip these**. The choice can be remembered per profile. Conflicts that only appear during the push are resolved the same way, then the push is retried. |
+| Handles "same path, different ID" | When a local site or folder was created separately from the cloud one, SCS refuses to push (*"attempted to be cached … with different ID. Non-unique paths cannot be serialized"*). Before pushing, DevSync pulls a snapshot of the same paths from your local CM, finds every conflict (reported at the topmost path), and asks: **Replace local** (moved to the local Recycle Bin, with a file backup in the data folder) or **Keep local, skip these**. Conflicts that only appear during the push are resolved the same way, then the push is retried. |
 | Exact, ID-based cleanup on the local CM | Conflicting local items are removed **by ID** through the local CM's Authoring API (using your CLI login), so it also works when the local CM has two items with the same name. Items go to the **local Recycle Bin** (`permanently: false`), so you can restore them there. Writes are only possible against `localhost`/`*.localhost` hosts: the client refuses write access to any other host, and the cloud client blocks all mutations. If the local API can't be reached, DevSync falls back to serialization-only handling and, for duplicates, tells you exactly which local ID to delete. |
 | Duplicate names in the cloud | Two cloud siblings with the same name can't be serialized. DevSync excludes that path with an SCS `Ignored` rule, warns you, and syncs everything else. |
 | Your local definitions are safe | Templates and renderings are pushed **create-if-missing** (`CreateOnly`, whole template subtree), so a template you're changing on your branch is never overwritten. |
@@ -32,8 +32,9 @@ Save the selection as a profile, and next time flip **"Only what changed since l
 | Delta sync | Uses the master index to find items updated since the last successful sync and pulls only those, with their dependencies. |
 | Safe by default | Read-only against the cloud (GraphQL mutations are blocked in code). Pushes only to `localhost` / `*.localhost` hosts. Default push mode never deletes local items. Parent folders are created *create-only*. |
 | PII masking | Blanks named fields (Email, Phone, …) and scrubs email addresses from serialized YAML *before* the push. |
-| Profiles | Save sync sets ("Homepage + Products") in `.devsync/profiles.json`. Commit the file and a new developer runs one profile on day one. |
-| Isolated workspace | Runs the Sitecore CLI in `.devsync/workspace` with its own generated module. Your `sitecore.json` and `*.module.json` files are never touched. |
+| Profiles | Save sync sets ("Homepage + Products") and reopen them with one click. They're stored per user in the data folder, not in the repo. |
+| Nothing added to your repo | All of DevSync's files (CLI workspaces, pulled items, backups, profiles, history, reports) live in its own data folder: `%LOCALAPPDATA%\DevSync\projects\<id>\` on Windows. The project's `.config/dotnet-tools.json` and `nuget.config` are copied there, so the same CLI and plugins run. Pulled item files are deleted after each sync, and the newest 5 backups are kept. The only project file DevSync touches is `.sitecore/user.json`, and only the token fields the CLI refreshed. An older `<project>/.devsync` folder is migrated, and DevSync offers to delete it. |
+| Sync report | Every sync, including failed ones, produces a report: status, counts, and every item that needs attention (orphaned items, duplicate cloud names, conflicts replaced or kept), each with its path, ID, template ID, what happened and **how to fix it**. It's shown in the **Report** tab, and **Save report…** saves it as HTML (to share) or CSV (for Excel). The last 20 reports are kept in the data folder. |
 | Headless CLI | `devsync run --profile "Homepage"` for scripts and onboarding. |
 | Demo mode | Open `src/renderer/index.html` in a browser for a working demo with sample data. |
 
@@ -90,7 +91,7 @@ Pipeline per sync:
                                              • de-overlap + order (templates → layout → media → content)
                                                     │
                                                     ▼
-                                           .devsync/workspace/
+                                           <data folder>/workspace/
                                              sitecore.json      (plugins copied, one module)
                                              DevSync.module.json
                                              .sitecore/user.json (copy)
@@ -99,10 +100,10 @@ Pipeline per sync:
                                                                      └──▶ dotnet sitecore ser push -n <local>
 ```
 
-- **Why a separate workspace?** SCS only allows an item to appear in one include across all modules. Running DevSync's generated module next to your repo's modules would clash. In the workspace it can't.
-- **Tokens:** the CLI may refresh tokens while it runs in the workspace. DevSync copies only the refreshed token fields back to your `.sitecore/user.json`, so your own CLI session keeps working. A backup goes to `.devsync/user.json.bak`.
-- **Every run** writes `.devsync/last-run.json` (the plan, the skipped references, file counts) for troubleshooting.
-- `.devsync/` contains its own `.gitignore`: everything is ignored except `profiles.json`, so commit that file to share sync sets with the team.
+- **Why a separate workspace (outside the repo)?** SCS only allows an item to appear in one include across all modules. Running DevSync's generated module next to your repo's modules would clash. In the workspace it can't.
+- **Tokens:** the CLI may refresh tokens while it runs in the workspace. DevSync copies only the refreshed token fields back to your `.sitecore/user.json`, so your own CLI session keeps working. A backup goes to `user.json.bak` in the data folder.
+- **Every run** writes a report (`reports/` and `last-report.json` in the data folder). The **Open data folder** link in the app goes straight there.
+- Profiles are saved per user and project in the data folder, not in the repo.
 
 ### Push rules
 
@@ -153,7 +154,7 @@ To let the headless CLI call the local CM's API, trust the local dev certificate
 
 ## Known limitations (v0.1)
 
-- **Replace removes local work at the conflicting paths.** It is always backed up first (`.devsync/backups/<time>/items/*.yml` plus `conflicts.json`). To restore, copy those files into an SCS module and push them after removing the cloud version.
+- **Replace removes local work at the conflicting paths.** It goes to the local Recycle Bin, and a file backup is kept in the data folder (`backups/<time>/`). To restore, copy those files into an SCS module and push them after removing the cloud version.
 - **Deletions in the cloud aren't picked up by delta sync.** Run a full sync now and then (in Mirror mode to remove stale local items).
 - Reference scanning (datasources and media) covers up to 1,000 items per selection and one language per profile. Templates are not limited: they are completed from the pulled files.
 - Media is pulled through SCS, so large media libraries are slow. Select media folders deliberately.

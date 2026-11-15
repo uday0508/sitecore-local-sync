@@ -143,7 +143,8 @@ function dropItemsUsingTemplates(ws, templateIds) {
       const text = fs.readFileSync(p, 'utf8');
       const ip = /^Path:\s*(.+)$/m.exec(text);
       const t = /^Template:\s*"?([0-9a-fA-F-]{36})"?/m.exec(text);
-      files.push({ file: p, path: ip ? ip[1].trim() : '', template: t ? normId(t[1]) : '' });
+      const idm = /^ID:\s*"?([0-9a-fA-F-]{36})"?/m.exec(text);
+      files.push({ file: p, path: ip ? ip[1].trim() : '', template: t ? normId(t[1]) : '', id: idm ? normId(idm[1]) : '' });
     }
   };
   walk(ws.itemsDir);
@@ -160,8 +161,14 @@ function dropItemsUsingTemplates(ws, templateIds) {
     return !inside;
   });
   fs.writeFileSync(modulePath, JSON.stringify(mod, null, 2));
-  // Report only the top of each dropped subtree.
-  return roots.filter((r) => !roots.some((o) => o !== r && isSameOrUnder(r.path, o.path) && normPath(r.path) !== normPath(o.path)));
+  // Report only the top of each dropped subtree, with how many items it held.
+  const tops = roots.filter((r) => !roots.some((o) => o !== r && isSameOrUnder(r.path, o.path) && normPath(r.path) !== normPath(o.path)));
+  for (const t of tops) {
+    t.items = files.filter((f) => isSameOrUnder(f.path, t.path)).length;
+    const own = files.find((f) => normPath(f.path) === normPath(t.path));
+    if (own) t.id = own.id;
+  }
+  return tops;
 }
 
 /** Template IDs from "Template ID <guid> did not exist" lines in CLI output. */

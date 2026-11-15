@@ -136,7 +136,7 @@
     },
     run: async ({ profile, dryRun }) => {
       const step = (s, status, detail) => emit({ type: 'step', id: s, status, detail });
-      step('prepare', 'running'); await wait(200); step('prepare', 'done', '.devsync/workspace');
+      step('prepare', 'running'); await wait(200); step('prepare', 'done', 'DevSync data folder');
       step('pull', 'running', profile.source);
       emit({ type: 'log', level: 'cmd', message: `> dotnet sitecore ser pull -n ${profile.source}` });
       for (const i of current.plan.includes) { await wait(90); emit({ type: 'log', level: 'info', message: `[master] Serialized ${i.path}` }); }
@@ -154,11 +154,11 @@
         step('check', 'waiting', '1 conflict(s): waiting for your choice');
         const answer = profile.onConflict !== 'ask' && profile.onConflict ? { decision: profile.onConflict } : await new Promise((r) => { conflictResolve = r; conflictListener(conflicts); });
         if (answer.decision === 'cancel') { emit({ type: 'error', message: 'Cancelled. Nothing was pushed to the local CM.' }); return { ok: false, error: 'Cancelled. Nothing was pushed to the local CM.' }; }
-        emit({ type: 'log', level: 'info', message: answer.decision === 'replace' ? 'Backed up 3 local item(s) to .devsync/backups/…' : 'Skipped 1 conflicting path(s). Your local versions were kept.' });
+        emit({ type: 'log', level: 'info', message: answer.decision === 'replace' ? 'Moved local …/Home/Data to the local Recycle Bin.' : 'Skipped 1 conflicting path(s). Your local versions were kept.' });
         step('check', 'done', `1 conflict(s): ${answer.decision === 'replace' ? 'replaced local' : 'kept local'}`);
         current.decision = answer.decision;
       } else step('check', 'done', 'no conflicts');
-      if (dryRun) step('push', 'skipped', 'dry run: items left in .devsync/workspace/items');
+      if (dryRun) step('push', 'skipped', 'dry run: nothing changed locally');
       else {
         step('push', 'running', profile.target);
         emit({ type: 'log', level: 'cmd', message: `> dotnet sitecore ser push -n ${profile.target}` });
@@ -166,9 +166,17 @@
         step('push', 'done');
         lastSync[profile.name] = new Date().toISOString();
       }
+      const issues = [];
+      if (current.decision === 'replace') issues.push({ type: 'conflict-replaced', severity: 'info', path: '/sitecore/content/Acme/Acme Global/Home/Data', id: '1d6b613eab204e3593ba36035851233c', detail: 'Local item 1d6b613e… (same path as cloud item 4051b852…) was moved to the local Recycle Bin and replaced by the cloud item.', fix: 'Nothing to do. To undo, restore it from the Recycle Bin in the local Content Editor.' });
+      if (current.decision === 'skip') issues.push({ type: 'conflict-kept', severity: 'warning', path: '/sitecore/content/Acme/Acme Global/Home/Data', id: '1d6b613eab204e3593ba36035851233c', detail: 'The local item was kept, so the cloud item and everything under it were not pushed.', fix: 'Sync again and choose "Replace local with cloud".' });
+      if (!dryRun) issues.push({ type: 'orphan', severity: 'warning', path: '/sitecore/content/Acme/Acme Global/Home/Products/Data/Quick Links', id: '2370c00c3e4d4f2fb6e6d6752dbdaf7e', templateId: 'af8c3de5068c4bc4b17890e29168da29', items: 2, detail: "Not synced (with 1 item(s) under it): its template af8c3de5… doesn't exist in the cloud environment, so the item is orphaned there and SCS can't push it.", fix: 'In the cloud Content Editor, search for af8c3de5068c4bc4b17890e29168da29. If nothing is found, change this item\'s template or delete the item, then sync again.' });
+      const report = { at: new Date().toISOString(), status: 'completed', source: profile.source, target: profile.target, dryRun, mode: 'full', profile: profile.name, counts: { pulledFiles: files, includes: current.plan.includes.length, alreadyLocal: 9, skippedItems: issues.filter((i) => i.severity === 'warning').reduce((a, i) => a + (i.items || 1), 0), conflicts: current.decision ? 1 : 0 }, issues };
+      emit({ type: 'report', report });
       emit({ type: 'done', pulled: files });
-      return okr({ pulled: files, conflicts: current.decision ? [{ path: '/sitecore/content/Acme/Acme Global/Home/Data' }] : [], decision: current.decision, warnings: [] });
+      return okr({ pulled: files, conflicts: current.decision ? [{ path: '/sitecore/content/Acme/Acme Global/Home/Data' }] : [], decision: current.decision, warnings: [], report });
     },
+    saveReport: () => okr(null),
+    removeLegacy: () => okr(true),
     cancel: () => { if (conflictResolve) conflictResolve({ decision: 'cancel' }); return okr(true); },
     onConflicts: (fn) => { conflictListener = fn; },
     resolveConflicts: (a) => { if (conflictResolve) { conflictResolve(a); conflictResolve = null; } return okr(true); },

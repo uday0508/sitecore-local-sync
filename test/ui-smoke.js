@@ -39,7 +39,9 @@ app.whenReady().then(async () => {
   await shot('2-synced.png');
   checks.afterSync = await js(`({
     note: document.querySelector('#summary .big-note')?.textContent,
-    conflictNote: document.querySelector('#summary .warn-note')?.textContent,
+    attention: document.querySelector('#summary .attention')?.textContent,
+    reportRows: document.querySelectorAll('#reportBody tbody tr').length,
+    reportTabActive: document.querySelector('#tabs button[data-tab=report]').classList.contains('on'),
     steps: [...document.querySelectorAll('#steps li')].map(l => l.className).join(','),
     planRows: document.querySelectorAll('#planBody tbody tr').length,
     templates: [...document.querySelectorAll('#planBody tbody tr')].filter(r => r.textContent.includes('/sitecore/templates/Project')).length,
@@ -61,6 +63,9 @@ app.whenReady().then(async () => {
   await wait(300);
   await shot('4-connection.png');
 
+  await js(`document.querySelector('#tabs button[data-tab=report]').click()`);
+  await wait(200);
+  await shot('6-report.png');
   await js(`document.getElementById('connDialog').close()`);
   win.setSize(1200, 900);
   await wait(500);

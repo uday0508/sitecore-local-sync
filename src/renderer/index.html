@@ -93,10 +93,12 @@
         <div class="summary" id="summary"><span class="hint">Nothing synced yet.</span></div>
         <div class="tabs" id="tabs">
           <button data-tab="plan" class="on">Plan <span class="count" id="planCount">0</span></button>
+          <button data-tab="report">Report <span class="count" id="reportCount">0</span></button>
           <button data-tab="log">Log</button>
-          <button class="link right" id="openWs">Open .devsync</button>
+          <button class="link right" id="openWs" title="DevSync's data folder for this project (outside your repo)">Open data folder</button>
         </div>
         <div class="tab-body" data-body="plan" id="planBody"><div class="empty small">The plan appears here: every item, in push order.</div></div>
+        <div class="tab-body hidden" data-body="report" id="reportBody"><div class="empty small">After a sync, every item that needs attention is listed here with how to fix it.</div></div>
         <div class="tab-body hidden log" data-body="log" id="logBody"></div>
     </section>
   </main>
@@ -155,7 +157,7 @@
       <div class="choice-grid">
         <button class="choice" value="replace">
           <b>Replace local with cloud</b>
-          <span>Local items at these paths (and everything under them) are backed up to <code>.devsync/backups</code>, then removed so the cloud versions can be pushed.</span>
+          <span>Local items at these paths (and everything under them) are moved to the local Recycle Bin (and backed up by DevSync), then replaced so the cloud versions can be pushed.</span>
         </button>
         <button class="choice" value="skip">
           <b>Keep local, skip these</b>
@@ -174,7 +176,7 @@
     <form method="dialog" class="dialog">
       <div class="dialog-head"><h2>Save sync set</h2></div>
       <label>Name<input id="profileNameInput" placeholder="e.g. Homepage + Products" spellcheck="false" /></label>
-      <div class="hint">Saved to <code>.devsync/profiles.json</code>. Commit it so the whole team can use it.</div>
+      <div class="hint">Saved on this computer (not in your repo).</div>
       <div class="dialog-foot"><span class="grow"></span>
         <button class="btn ghost" value="cancel">Cancel</button>
         <button class="btn primary" value="save" id="nameSave">Save</button>

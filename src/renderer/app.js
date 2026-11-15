@@ -77,6 +77,8 @@ function applyProject(info) {
 
   renderProfiles();
   renderConn();
+  renderReport(info.lastReport || null);
+  offerLegacyCleanup(info);
   $('tree').replaceChildren(el('div', { class: 'empty' }, 'Connect to browse your content.'));
   $('sites').replaceChildren();
 }
@@ -319,7 +321,7 @@ async function saveProfile() {
     $('profileSelect').value = p.name;
     saveSettings({ lastProfile: p.name });
     renderLastSync(state.project.profiles.find((x) => x.name === p.name));
-    toast(`Saved "${p.name}". Commit .devsync/profiles.json to share it with the team.`, 'ok');
+    toast(`Saved "${p.name}".`, 'ok');
   } catch (e) { toast(e.message, 'err'); }
 }
 
@@ -383,17 +385,15 @@ async function sync(dryRun = false) {
   try {
     await makePlan();
     const r = await call(api.run, { profile, dryRun });
-    const notes = [];
-    if (r.conflicts && r.conflicts.length) {
-      notes.push(el('div', { class: 'warn-note' }, dryRun
-        ? `${r.conflicts.length} conflict(s) found: ${r.conflicts.map((c) => c.path).join(', ')}. A real sync will ask what to do.`
-        : `${r.conflicts.length} conflict(s) ${r.decision === 'replace' ? 'replaced (backup in .devsync/backups)' : 'skipped (local kept)'}.`));
-    }
-    for (const w of (r.warnings || []).filter((x) => !/conflict/i.test(x))) notes.push(el('div', { class: 'warn-note' }, w));
+    const needs = ((r.report && r.report.issues) || []).filter((i) => i.severity !== 'info');
+    const notes = needs.length
+      ? [el('div', { class: 'attention' }, `${needs.length} item(s) need attention. `, el('button', { class: 'link', onclick: () => showTab('report') }, 'Open the report'))]
+      : [];
     $('summary').replaceChildren(
       el('div', { class: 'big-note ok' }, dryRun ? `Dry run done: ${r.pulled} item files pulled. Nothing changed locally.` : `Done: ${r.pulled} item files synced to ${profile.target}.`),
       ...summaryTags(state.planned), ...notes);
-    toast(dryRun ? 'Dry run finished.' : 'Sync finished.', 'ok');
+    toast(dryRun ? 'Dry run finished.' : needs.length ? `Sync finished. ${needs.length} item(s) need attention.` : 'Sync finished.', needs.length ? '' : 'ok');
+    if (needs.length) showTab('report');
     state.project = await call(api.reloadProject);
     renderProfiles();
     renderLastSync(state.project.profiles.find((p) => p.name === $('profileSelect').value));
@@ -404,7 +404,8 @@ async function sync(dryRun = false) {
 
 function fail(e) {
   const msg = friendlyError(e.message);
-  $('summary').replaceChildren(el('div', { class: 'big-note err' }, 'Sync stopped'), el('span', { class: 'hint' }, msg));
+  $('summary').replaceChildren(el('div', { class: 'big-note err' }, 'Sync stopped'), el('span', { class: 'hint' }, msg),
+    el('div', { class: 'attention' }, el('button', { class: 'link', onclick: () => showTab('report') }, 'Open the report')));
   toast(msg, 'err');
   logLine({ level: 'err', message: e.message, at: new Date().toISOString() });
 }
@@ -458,6 +459,7 @@ function step(id, status, detail) {
 function onEvent(e) {
   if (e.type === 'log') logLine(e);
   if (e.type === 'step' && e.id !== 'prepare') step(e.id, e.status, e.detail);
+  if (e.type === 'report') renderReport(e.report);
   if (e.type === 'error') {
     const running = $('steps').querySelector('li.running');
     if (running) running.className = 'error';
@@ -474,6 +476,49 @@ function logLine(e) {
 function showTab(name) {
   for (const b of $('tabs').querySelectorAll('button[data-tab]')) b.classList.toggle('on', b.dataset.tab === name);
   for (const b of document.querySelectorAll('.tab-body')) b.classList.toggle('hidden', b.dataset.body !== name);
+}
+
+// ---------- report ----------
+const TYPE_LABEL = {
+  orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud',
+  'conflict-replaced': 'Replaced local item', 'conflict-kept': 'Kept local item', 'conflict-pending': 'Conflict (dry run)',
+  notice: 'Notice', error: 'Sync stopped',
+};
+let lastReport = null;
+function renderReport(rep) {
+  lastReport = rep;
+  const box = $('reportBody');
+  if (!rep) { box.replaceChildren(el('div', { class: 'empty small' }, 'After a sync, every item that needs attention is listed here with how to fix it.')); $('reportCount').textContent = '0'; return; }
+  const warn = rep.issues.filter((i) => i.severity === 'warning').length;
+  $('reportCount').textContent = String(rep.issues.filter((i) => i.severity !== 'info').length);
+  const status = rep.status === 'failed' ? ['err', 'Failed'] : warn ? ['warn', 'Completed with warnings'] : ['ok', 'Completed'];
+  const c = rep.counts || {};
+  box.replaceChildren(
+    el('div', { class: 'report-head' },
+      el('span', { class: `badge ${status[0]}` }, status[1]),
+      el('span', { class: 'hint grow' }, `${fmtDate(rep.at)} · ${rep.source} → ${rep.target}${rep.dryRun ? ' · dry run' : ''} · ${c.pulledFiles || 0} pulled · ${c.alreadyLocal || 0} already on machine · ${c.skippedItems || 0} skipped`),
+      el('button', { class: 'btn small', onclick: saveReport }, 'Save report…')),
+    rep.issues.length
+      ? el('table', { class: 'plan report' },
+        el('thead', {}, el('tr', {}, el('th', {}, 'Type'), el('th', {}, 'Item'), el('th', {}, 'What happened'), el('th', {}, 'How to fix'))),
+        el('tbody', {}, rep.issues.map((i) => el('tr', { class: `sev-${i.severity}` },
+          el('td', {}, el('span', { class: 'tag' }, TYPE_LABEL[i.type] || i.type)),
+          el('td', { class: 'path' }, i.path || '—', i.id ? el('div', { class: 'ops' }, `ID ${i.id}`) : '', i.templateId ? el('div', { class: 'ops' }, `template ${i.templateId}`) : ''),
+          el('td', {}, i.detail),
+          el('td', { class: 'fix' }, i.fix || '')))))
+      : el('div', { class: 'empty small' }, 'Nothing needed attention. Everything selected was synced.'));
+}
+async function saveReport() {
+  if (!lastReport) return;
+  try { const f = await call(api.saveReport, { report: lastReport }); if (f) toast(`Report saved: ${f}`, 'ok'); } catch (e) { toast(e.message, 'err'); }
+}
+
+async function offerLegacyCleanup(info) {
+  if (!info.legacy) return;
+  const mb = (info.legacy.bytes / 1048576).toFixed(1);
+  if (window.confirm(`An older DevSync version created "${info.legacy.path}" inside your project (${mb} MB). DevSync now keeps its files outside your repo, and your profiles were moved over.\n\nDelete the old folder from your project?`)) {
+    try { await call(api.removeLegacy); toast('Removed the old .devsync folder from your project.', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  }
 }
 
 // ---------- conflicts ----------

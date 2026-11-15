@@ -2,17 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { projectDataDir } = require('./paths');
 
 /**
  * Profiles are saved sync sets (e.g. "Homepage + Products") shared by the team.
- * They live in <project>/.devsync/profiles.json and never contain secrets.
- * Sync state (last successful sync per profile) lives in .devsync/state.json.
+ * They live in DevSync's app-data folder for the project (never in the repo) and contain no secrets.
+ * Sync state (last successful sync per profile) lives next to them in state.json.
  */
-function dir(projectRoot) {
-  const d = path.join(projectRoot, '.devsync');
-  fs.mkdirSync(d, { recursive: true });
-  return d;
-}
+function dir(projectRoot) { return projectDataDir(projectRoot); }
 
 function readFile(p, fallback) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return fallback; }

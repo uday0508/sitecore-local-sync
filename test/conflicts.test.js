@@ -1,6 +1,8 @@
 'use strict';
 
 const test = require('node:test');
+process.env.DEVSYNC_HOME = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'dshome-'));
+const { projectDataDir } = require('../src/core/paths');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -66,8 +68,8 @@ test('your case: local Home/Data has a different ID -> replace backs up, deletes
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Data/Text 1').id, G(5));
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Data/Local Only'), undefined, 'conflicting subtree replaced');
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Sibling').id, L(3), 'unrelated local sibling untouched');
-  const backups = fs.readdirSync(path.join(s.dir, '.devsync', 'backups'));
-  const files = fs.readdirSync(path.join(s.dir, '.devsync', 'backups', backups[0], 'items'));
+  const backups = fs.readdirSync(path.join(projectDataDir(s.dir), 'backups'));
+  const files = fs.readdirSync(path.join(projectDataDir(s.dir), 'backups', backups[0], 'items'));
   assert.equal(files.length, 2, 'local Data + its child backed up');
   assert.equal(r.decision, 'replace');
 });
@@ -149,7 +151,7 @@ test('duplicate names in the cloud: that path is skipped with a warning, the res
   assert.ok(r.warnings.some((w) => /two items at \/sitecore\/content\/Tenant\/Site\/Home\/About/.test(w)));
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/About'), undefined);
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home').id, G(3));
-  const mod = JSON.parse(fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'DevSync.module.json'), 'utf8'));
+  const mod = JSON.parse(fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'DevSync.module.json'), 'utf8'));
   assert.ok(mod.items.includes.some((i) => (i.rules || []).some((r) => r.path === '/About' && r.scope === 'Ignored')));
 });
 
@@ -169,7 +171,7 @@ test('rotating refresh tokens survive many CLI runs across workspaces', async ()
   await s.go();
   const projectToken = JSON.parse(fs.readFileSync(path.join(s.dir, '.sitecore', 'user.json'), 'utf8')).endpoints.xmCloud.refreshToken;
   // The last workspace that ran must have the same token as the project (nothing stale left behind).
-  const ws = JSON.parse(fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', '.sitecore', 'user.json'), 'utf8')).endpoints.xmCloud.refreshToken;
+  const ws = JSON.parse(fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', '.sitecore', 'user.json'), 'utf8')).endpoints.xmCloud.refreshToken;
   assert.equal(projectToken, ws);
   assert.notEqual(projectToken, 'r1');
   // The user's endpoint flags are never changed.
@@ -292,7 +294,7 @@ test('a template living outside /sitecore/templates is pulled and pushed before 
   await s.go({ localClient: s.sim.api });
   assert.equal(s.sim.at('/sitecore/system/Generated/Components/Mock-Link List').id, G(120));
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Quick Links').id, G(65));
-  const mod = JSON.parse(fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'DevSync.module.json'), 'utf8')).items.includes;
+  const mod = JSON.parse(fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'DevSync.module.json'), 'utf8')).items.includes;
   const tpl = mod.findIndex((i) => i.path.endsWith('/Mock-Link List'));
   const firstContent = mod.findIndex((i) => i.path.startsWith('/sitecore/content'));
   assert.ok(tpl >= 0 && tpl < firstContent, 'template include ordered before content');
@@ -309,7 +311,7 @@ test('even when the scan misses it, a template outside /sitecore/templates is fo
   const s = await setup('outside2', { cloud, local, profileExtra: { dependencies: { maxScanItems: 1 } } });
   await s.go({ localClient: s.sim.api });
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/About/Deep/Quick Links').id, G(66));
-  const calls = fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'calls.log'), 'utf8').trim().split('\n');
+  const calls = fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'calls.log'), 'utf8').trim().split('\n');
   assert.equal(calls.filter((c) => c.includes('push')).length, 1, 'no failed push: ordering was right the first time');
 });
 
@@ -334,10 +336,10 @@ test('Sitecore default templates and folders already in the local image are not 
   assert.ok(paths.includes('/sitecore/templates/Project/Site/Page'), 'project templates still pulled');
   assert.ok(planned.alreadyLocal >= 4);
   await executeSync(s.project, s.profile, planned, { client: s.client, dotnet: s.sim.dotnet, localClient: s.sim.api });
-  const mod = JSON.parse(fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'DevSync.module.json'), 'utf8')).items.includes;
+  const mod = JSON.parse(fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'DevSync.module.json'), 'utf8')).items.includes;
   assert.ok(!mod.some((i) => /JSS Experience Accelerator/.test(i.path)), 'the _Description base chain was not pulled after the fact either');
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home').id, G(3));
-  const calls = fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'calls.log'), 'utf8').trim().split('\n');
+  const calls = fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'calls.log'), 'utf8').trim().split('\n');
   assert.deepEqual(calls, ['sitecore ser pull -n prod', 'sitecore ser push -n local']);
 });
 
@@ -347,7 +349,7 @@ test('without the local API, known Sitecore product folders are still skipped', 
   const planned = await planSync(s.client, s.profile, { projectRoot: s.dir });
   assert.ok(!planned.plan.includes.some((i) => /JSS Experience Accelerator/.test(i.path)));
   await executeSync(s.project, s.profile, planned, { client: s.client, dotnet: s.sim.dotnet });
-  const mod = JSON.parse(fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'DevSync.module.json'), 'utf8')).items.includes;
+  const mod = JSON.parse(fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'DevSync.module.json'), 'utf8')).items.includes;
   assert.ok(!mod.some((i) => /JSS Experience Accelerator/.test(i.path)));
   assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home').id, G(3));
 });
@@ -383,8 +385,69 @@ for (const withApi of [true, false]) {
     assert.equal(s.sim.at('/sitecore/content/Tenant/Site/Home/Data/Text 1').id, G(5), 'the rest synced');
     assert.deepEqual(r.orphans.map((o) => o.path), ['/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links']);
     assert.ok(r.warnings.some((w) => /Quick Links.*af8c3de5068c4bc4b17890e29168da29.*orphaned/.test(w)));
-    const pushes = fs.readFileSync(path.join(s.dir, '.devsync', 'workspace', 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('push')).length;
+    const pushes = fs.readFileSync(path.join(projectDataDir(s.dir), 'workspace', 'calls.log'), 'utf8').split('\n').filter((l) => l.includes('push')).length;
     assert.equal(pushes, withApi ? 1 : 2, withApi ? 'left out before the push' : 'found by the push, left out, retried');
     assert.ok(getLastSync(s.dir, `orphan-${withApi}`));
   });
 }
+
+// ---- Report + no files in the repo + migration ----
+const { toCsv, toHtml, loadLastReport } = require('../src/core/report');
+const { migrateLegacy, removeLegacy } = require('../src/core/paths');
+
+test('every sync produces a report listing skipped items with a fix; also saved as the last report', async () => {
+  const s = await setup('report', { cloud: orphanCloud() });
+  const r = await s.go({ localClient: s.sim.api });
+  const rep = r.report;
+  assert.equal(rep.status, 'completed');
+  const orphan = rep.issues.find((i) => i.type === 'orphan');
+  assert.equal(orphan.path, '/sitecore/content/Tenant/Site/Home/Products/Data/Quick Links');
+  assert.equal(orphan.templateId, 'af8c3de5068c4bc4b17890e29168da29');
+  assert.equal(orphan.id, G(82).replace(/-/g, ''));
+  assert.equal(orphan.items, 2, 'Quick Links + AboutUs');
+  assert.match(orphan.fix, /search for af8c3de5068c4bc4b17890e29168da29/);
+  assert.equal(rep.counts.skippedItems, 2);
+  assert.deepEqual(loadLastReport(s.dir).issues.map((i) => i.type), rep.issues.map((i) => i.type));
+  assert.ok(s.events.some((e) => e.type === 'report'));
+  const csv = toCsv(rep);
+  assert.match(csv, /"Skipped: orphaned item","warning","\/sitecore\/content\/Tenant\/Site\/Home\/Products\/Data\/Quick Links"/);
+  assert.match(toHtml(rep), /Completed with warnings/);
+});
+
+test('conflicts appear in the report as replaced (info) or kept (warning)', async () => {
+  const local = [...baseLocal(), ...LOCAL_TEMPLATES, { id: G(3), path: '/sitecore/content/Tenant/Site/Home', template: G(100), parent: G(2) }, { id: L(1), path: '/sitecore/content/Tenant/Site/Home/Data', template: G(103), parent: G(3) }];
+  const a = await setup('rep-replace', { local });
+  const ra = await a.go({ localClient: a.sim.api, onConflicts: async () => ({ decision: 'replace' }) });
+  assert.deepEqual(ra.report.issues.map((i) => [i.type, i.severity, i.path]), [['conflict-replaced', 'info', '/sitecore/content/Tenant/Site/Home/Data']]);
+  const b = await setup('rep-keep', { local });
+  const rb = await b.go({ localClient: b.sim.api, onConflicts: async () => ({ decision: 'skip' }) });
+  assert.deepEqual(rb.report.issues.map((i) => [i.type, i.severity]), [['conflict-kept', 'warning']]);
+});
+
+test('a failed sync still produces a report with the error and the fix', async () => {
+  const dir = tempProject();
+  const project = loadProject(dir);
+  const sim = scsSim({ cloud: tree(), localDown: true });
+  const client = fakeClient(tree());
+  const profile = saveProfile(dir, { name: 'down', source: 'prod', target: 'local', selections: [HOME], dependencies: {} });
+  const planned = await planSync(client, profile, { projectRoot: dir });
+  const err = await executeSync(project, profile, planned, { client, dotnet: sim.dotnet }).catch((e) => e);
+  assert.equal(err.report.status, 'failed');
+  const e = err.report.issues.find((i) => i.type === 'error');
+  assert.match(e.fix, /up\.ps1/);
+  assert.equal(loadLastReport(dir).status, 'failed');
+});
+
+test('an old <project>/.devsync folder is migrated (profiles, history) and can be removed', () => {
+  const dir = tempProject();
+  fs.mkdirSync(path.join(dir, '.devsync', 'workspace', 'items'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.devsync', 'profiles.json'), JSON.stringify({ profiles: [{ name: 'Old', selections: [] }] }));
+  fs.writeFileSync(path.join(dir, '.devsync', 'workspace', 'items', 'x.yml'), 'x'.repeat(5000));
+  const m = migrateLegacy(dir);
+  assert.equal(m.found, true);
+  assert.ok(m.bytes >= 5000);
+  assert.deepEqual(m.moved, ['profiles.json']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(projectDataDir(dir), 'profiles.json'), 'utf8')).profiles[0].name, 'Old');
+  removeLegacy(dir);
+  assert.ok(!fs.existsSync(path.join(dir, '.devsync')));
+});

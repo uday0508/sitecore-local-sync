@@ -1,6 +1,8 @@
 'use strict';
 
 const test = require('node:test');
+process.env.DEVSYNC_HOME = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'dshome-'));
+const { projectDataDir } = require('../src/core/paths');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
@@ -164,7 +166,7 @@ test('end to end: plan, pull, mask, push in an isolated workspace, record state,
   const events = [];
   const r = await executeSync(project, profile, planned, { dotnet: fakeDotnet(), onEvent: (e) => events.push(e) });
 
-  const ws = path.join(dir, '.devsync', 'workspace');
+  const ws = path.join(projectDataDir(dir), 'workspace');
   const calls = fs.readFileSync(path.join(ws, 'calls.log'), 'utf8').trim().split('\n');
   assert.deepEqual(calls, ['sitecore ser pull -n prod', 'sitecore ser push -n local']);
   assert.equal(r.pulled, planned.plan.includes.length);
@@ -181,13 +183,12 @@ test('end to end: plan, pull, mask, push in an isolated workspace, record state,
   // allowWrite was only enabled in the private workspace copy, never in the user's file.
   assert.equal(user.endpoints.prod.allowWrite, undefined);
   assert.equal(JSON.parse(fs.readFileSync(path.join(ws, '.sitecore', 'user.json'), 'utf8')).endpoints.prod.allowWrite, true);
-  assert.ok(fs.existsSync(path.join(dir, '.devsync', 'user.json.bak')));
+  assert.ok(fs.existsSync(path.join(projectDataDir(dir), 'user.json.bak')));
 
   // Masking ran before push.
-  const anyYml = fs.readdirSync(path.join(ws, 'items'))[0];
-  const yml = fs.readFileSync(path.join(ws, 'items', anyYml, 'item.yml'), 'utf8');
-  assert.ok(!/acme\.com/.test(yml));
-  assert.ok(events.some((e) => e.type === 'step' && e.id === 'mask' && e.status === 'done'));
+  const maskStep = events.find((e) => e.type === 'step' && e.id === 'mask' && e.status === 'done');
+  assert.ok(maskStep && /^[1-9]\d* value\(s\) masked/.test(maskStep.detail), 'masking ran before push');
+  assert.ok(!fs.existsSync(path.join(ws, 'items')), 'pulled files removed after the sync');
 
   // State recorded, so a delta run now works.
   assert.ok(getLastSync(dir, 'Homepage'));
@@ -208,13 +209,17 @@ test('a failing CLI step surfaces an error event and does not record a sync', as
   assert.equal(getLastSync(dir, 'X'), null);
 });
 
-test('.devsync gitignore keeps profiles shareable but ignores workspace and secrets', async () => {
+test('nothing is written into the project folder (except refreshed CLI tokens in .sitecore/user.json)', async () => {
   const dir = tempProject();
+  const list = (d) => { const out = []; const w = (x) => { for (const e of fs.readdirSync(x, { withFileTypes: true })) { const p = path.join(x, e.name); if (e.isDirectory()) w(p); else out.push(path.relative(d, p)); } }; w(d); return out.sort(); };
+  const before = list(dir);
   const project = loadProject(dir);
-  const profile = saveProfile(dir, { name: 'G', source: 'prod', target: 'local', selections: [HOME], dependencies: { media: false, datasources: false } });
+  const profile = saveProfile(dir, { name: 'G', source: 'prod', target: 'local', selections: [HOME], dependencies: {} });
   const planned = await planSync(fakeClient(sampleTree()), profile, { projectRoot: dir });
   await executeSync(project, profile, planned, { dotnet: fakeDotnet() });
-  assert.equal(fs.readFileSync(path.join(dir, '.devsync', '.gitignore'), 'utf8'), '*\n!.gitignore\n!profiles.json\n');
+  assert.deepEqual(list(dir), before, 'no new files in the project');
+  assert.ok(fs.existsSync(path.join(projectDataDir(dir), 'profiles.json')));
+  assert.ok(!fs.existsSync(path.join(projectDataDir(dir), 'workspace', 'items')), 'pulled items cleaned up after a successful sync');
 });
 
 // ---- Regression: user.json with only the CLI login ("xmCloud" -> Deploy API) and a local "default" ----
@@ -329,7 +334,7 @@ test('templates missed by the scan cap are found after pull, with their base cha
   assert.ok(!planned.plan.includes.some((i) => i.path.endsWith('Mock-Link List')), 'scan really missed it');
   const logs = [];
   await executeSync(project, profile, planned, { client, dotnet: fakeDotnetTree(tree, { localTemplates: [...SYSTEM_TEMPLATES, G(112)] }), onEvent: (e) => e.type === 'log' && logs.push(e.message) });
-  const ws = path.join(dir, '.devsync', 'workspace');
+  const ws = path.join(projectDataDir(dir), 'workspace');
   const mod = JSON.parse(fs.readFileSync(path.join(ws, 'DevSync.module.json'), 'utf8')).items.includes;
   const ml = mod.findIndex((i) => i.path.endsWith('Mock-Link List'));
   const base = mod.findIndex((i) => i.path.endsWith('_Link List Base'));
@@ -351,7 +356,7 @@ test('if the local CM still reports a missing template, DevSync pulls it and ret
   const planned = await planSync(client, profile, { projectRoot: dir });
   // G(112) lives under /System, so it's assumed built in and skipped, but this local CM lacks it.
   await executeSync(project, profile, planned, { client, dotnet: fakeDotnetTree(tree, { localTemplates: SYSTEM_TEMPLATES }) });
-  const ws = path.join(dir, '.devsync', 'workspace');
+  const ws = path.join(projectDataDir(dir), 'workspace');
   const calls = fs.readFileSync(path.join(ws, 'calls.log'), 'utf8').trim().split('\n');
   assert.deepEqual(calls, ['sitecore ser pull -n prod', 'sitecore ser push -n local', 'sitecore ser push -n local']);
   const mod = JSON.parse(fs.readFileSync(path.join(ws, 'DevSync.module.json'), 'utf8')).items.includes;

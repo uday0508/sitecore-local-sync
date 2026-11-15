@@ -4,25 +4,31 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { isLocalHost, resolveEndpoint, isLoginEndpoint, getEndpoint } = require('./project');
+const { projectDataDir } = require('./paths');
 
 const NAMESPACE = 'DevSync';
 const ITEMS_DIR = 'items';
 const TOKEN_KEY = /token|expires|lastupdated/i;
 
 /**
- * DevSync runs the Sitecore CLI inside a private workspace (<project>/.devsync/workspace)
- * that holds only DevSync's generated module. That way:
+ * DevSync runs the Sitecore CLI inside a private workspace in its app-data folder (see paths.js),
+ * never inside your project. The workspace holds only DevSync's generated module, so:
  *  - your repo's sitecore.json and *.module.json files are never touched, and
  *  - SCS's rule that an item appears in only one include can't clash with your modules.
- * The workspace sits inside the project, so the CLI tool manifest (.config/dotnet-tools.json)
- * is still found by walking up the folders.
+ * The project's .config/dotnet-tools.json and nuget.config are copied in, so "dotnet sitecore"
+ * resolves the same CLI version and plugins as in your project.
  */
 function prepareWorkspace(project, moduleJson, { sourceName, dirName = 'workspace' } = {}) {
-  const base = path.join(project.root, '.devsync');
+  const base = projectDataDir(project.root);
   const ws = path.join(base, dirName);
   fs.mkdirSync(path.join(ws, '.sitecore'), { recursive: true });
-  // Ignore the workspace, state and token backups, but let teams commit shared profiles.
-  fs.writeFileSync(path.join(base, '.gitignore'), '*\n!.gitignore\n!profiles.json\n');
+  // Same CLI tool version and plugin feeds as the project.
+  const manifest = path.join(project.root, '.config', 'dotnet-tools.json');
+  if (fs.existsSync(manifest)) { fs.mkdirSync(path.join(ws, '.config'), { recursive: true }); fs.copyFileSync(manifest, path.join(ws, '.config', 'dotnet-tools.json')); }
+  for (const n of ['nuget.config', 'NuGet.Config', 'NuGet.config']) {
+    const f = path.join(project.root, n);
+    if (fs.existsSync(f)) { fs.copyFileSync(f, path.join(ws, 'nuget.config')); break; }
+  }
 
   const sj = project.sitecoreJson;
   const sitecoreJson = {
@@ -68,8 +74,24 @@ function assertSafeTargets(project, sourceName, targetName, { allowRemoteTarget 
   return { source, target };
 }
 
-/** Run a CLI command in the workspace and stream output lines. */
-function runCli(args, { cwd, dotnet = process.env.DEVSYNC_DOTNET || 'dotnet', onLine = () => {}, signal } = {}) {
+/**
+ * Run a CLI command in the workspace and stream output lines. If dotnet reports that the local
+ * tool isn't restored (first run in a new workspace), run "dotnet tool restore" once and retry.
+ */
+async function runCli(args, opts = {}) {
+  const seen = [];
+  const onLine = opts.onLine || (() => {});
+  try {
+    return await runCliOnce(args, { ...opts, onLine: (l, k) => { seen.push(l); onLine(l, k); } });
+  } catch (e) {
+    if (args[0] !== 'sitecore' || !/dotnet tool restore|is not restored|Could not execute because the specified command or file was not found/i.test(seen.join('\n'))) throw e;
+    onLine('The Sitecore CLI is not restored in the DevSync workspace yet. Running "dotnet tool restore" once…', 'info');
+    await runCliOnce(['tool', 'restore'], opts);
+    return runCliOnce(args, opts);
+  }
+}
+
+function runCliOnce(args, { cwd, dotnet = process.env.DEVSYNC_DOTNET || 'dotnet', onLine = () => {}, signal } = {}) {
   return new Promise((resolve, reject) => {
     onLine(`> ${dotnet} ${args.join(' ')}`, 'cmd');
     const child = spawn(dotnet, args, { cwd, shell: process.platform === 'win32', env: { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: '1' } });
@@ -110,7 +132,7 @@ function syncTokensBack(project, ws) {
     }
   }
   if (changed) {
-    fs.copyFileSync(project.userJsonPath, path.join(ws.base, 'user.json.bak'));
+    fs.copyFileSync(project.userJsonPath, path.join(ws.base, 'user.json.bak')); // in the app-data folder
     fs.writeFileSync(project.userJsonPath, JSON.stringify(original, null, 2));
   }
   return changed;

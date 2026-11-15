@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { normId, normPath, isSameOrUnder, parentPath } = require('./util');
 const { classify, coveredBySelection } = require('./dependencies');
+const { projectDataDir, pruneBackups } = require('./paths');
 
 /*
  * Path/ID conflicts between the cloud and the local CM.
@@ -90,10 +91,10 @@ function conflictFromCollision(col, cloud) {
   return { path: col.path, cloudId, localId, kind: classify(col.path), localItems: null, cloudItems: null };
 }
 
-/** Copy the local files of conflicting subtrees to .devsync/backups/<timestamp>/. */
+/** Copy the local files of conflicting subtrees to <app data>/backups/<timestamp>/ (newest 5 kept). */
 function backupConflicts(projectRoot, conflicts, localTree) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dir = path.join(projectRoot, '.devsync', 'backups', stamp);
+  const dir = path.join(projectDataDir(projectRoot), 'backups', stamp);
   fs.mkdirSync(path.join(dir, 'items'), { recursive: true });
   let n = 0;
   for (const rec of localTree.byPath.values()) {
@@ -101,6 +102,7 @@ function backupConflicts(projectRoot, conflicts, localTree) {
     fs.copyFileSync(rec.file, path.join(dir, 'items', `${String(n++).padStart(5, '0')}-${rec.id}.yml`));
   }
   fs.writeFileSync(path.join(dir, 'conflicts.json'), JSON.stringify({ at: new Date().toISOString(), conflicts }, null, 2));
+  pruneBackups(projectRoot, 5);
   return { dir, files: n };
 }
 

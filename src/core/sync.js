@@ -12,6 +12,7 @@ const { buildPlan, toModuleJson } = require('./plan');
 const { maskDirectory, DEFAULT_MASK_OPTIONS } = require('./mask');
 const { prepareWorkspace, assertSafeTargets, runCli, syncTokensBack, pushTokensInto, countYaml } = require('./workspace');
 const { explainCliFailure } = require('./cliErrors');
+const { saveReport } = require('./report');
 const { normPath } = require('./util');
 const {
   readTree, findConflicts, collisionsFromOutput, conflictFromCollision, backupConflicts,
@@ -183,6 +184,9 @@ async function executeSync(project, profile, planned, {
   const startedAt = new Date().toISOString();
   const warnings = [];
   const warn = (m) => { warnings.push(m); log(m, 'warn'); };
+  const issues = [];
+  const issue = (i) => issues.push({ severity: 'warning', ...i });
+  const t0 = Date.now();
 
   if (!planned.plan.includes.length) { log('Nothing to sync: the plan is empty.'); emit({ type: 'done', pulled: 0 }); return { pulled: 0, conflicts: [], warnings }; }
   assertSafeTargets(project, profile.source, profile.target, { allowRemoteTarget });
@@ -237,7 +241,10 @@ async function executeSync(project, profile, planned, {
     localApi = false;
     if (!localClient) return null;
     try { await localClient.resolvePaths(['/sitecore/content']); localApi = localClient; }
-    catch (e) { warn(`Could not use the local CM's Authoring API (${e.message}). Falling back to serialization-only checks.`); }
+    catch (e) {
+      warn(`Could not use the local CM's Authoring API (${e.message}). Falling back to serialization-only checks.`);
+      issue({ type: 'notice', severity: 'info', path: '', detail: `The local CM's API could not be reached (${e.message}), so conflicts and duplicates were handled through serialization only.`, fix: 'Check that https://xmcloudcm.localhost/sitecore opens without a certificate warning, and run "dotnet sitecore cloud login".' });
+    }
     return localApi || null;
   };
 
@@ -248,6 +255,7 @@ async function executeSync(project, profile, planned, {
     if (decision === 'skip') {
       const r = skipInWorkspace(ws, conflicts);
       warn(`Skipped ${conflicts.length} conflicting path(s) (${r.removedFiles} cloud item(s) not pushed). Your local versions were kept: ${conflicts.map((c) => c.path).join(', ')}`);
+      for (const c of conflicts) issue({ type: 'conflict-kept', path: c.path, id: c.localId, items: c.cloudItems, detail: `Local item ${c.localId} has the same path as cloud item ${c.cloudId}. The local item was kept, so the cloud item and everything under it were not pushed.`, fix: 'Sync again and choose "Replace local with cloud" to get the cloud version.' });
       return;
     }
     // Replace. Back up the local subtrees first (best effort: duplicates can make SCS refuse).
@@ -270,6 +278,7 @@ async function executeSync(project, profile, planned, {
       for (const c of conflicts) {
         await api.deleteItem(c.localId);
         log(`Moved local ${c.path} (${c.localId}) and its children to the local Recycle Bin.`);
+        issue({ type: 'conflict-replaced', severity: 'info', path: c.path, id: c.localId, items: c.localItems, detail: `Local item ${c.localId} (same path as cloud item ${c.cloudId}) was moved to the local Recycle Bin and replaced by the cloud item.`, fix: 'Nothing to do. To undo, restore it from the Recycle Bin in the local Content Editor.' });
       }
       return;
     }
@@ -290,6 +299,7 @@ async function executeSync(project, profile, planned, {
       }
     }
     log(`Removed ${conflicts.length} conflicting local item(s) so the cloud versions can be pushed.`);
+    for (const c of conflicts) issue({ type: 'conflict-replaced', severity: 'info', path: c.path, id: c.localId, items: c.localItems, detail: `Local item ${c.localId} (same path as cloud item ${c.cloudId}) was removed and replaced by the cloud item.`, fix: 'Nothing to do. A file backup is in DevSync\'s backups folder.' });
   };
 
   const wantTemplates = !!client;
@@ -302,6 +312,7 @@ async function executeSync(project, profile, planned, {
     orphans.push(...dropped);
     const byTpl = new Map();
     for (const d of dropped) byTpl.set(d.template, [...(byTpl.get(d.template) || []), d.path]);
+    for (const d of dropped) issue({ type: 'orphan', path: d.path, id: d.id, templateId: d.template, items: d.items, detail: `Not synced (with ${Math.max(0, (d.items || 1) - 1)} item(s) under it): its template ${d.template} doesn't exist in the cloud environment, so the item is orphaned there and SCS can't push it.`, fix: `In the cloud Content Editor, search for ${d.template}. If nothing is found, change this item's template or delete the item, then sync again.` });
     for (const [t, paths] of byTpl) {
       warn(`Skipped ${paths.join(', ')} (and anything under it): it uses template ${t}, which doesn't exist in the cloud environment, so the item is orphaned there. To fix: in the cloud Content Editor, search for ${t}. If nothing is found, the template was deleted, so change that item's template or delete the item.`);
     }
@@ -320,6 +331,7 @@ async function executeSync(project, profile, planned, {
         for (const c of cols) {
           ignorePathInModule(modulePath, c.path);
           warn(`The cloud has two items at ${c.path} (${c.ids.join(', ')}). SCS can't serialize duplicate names, so this path is skipped. Rename one of them in the cloud to sync it.`);
+          issue({ type: 'cloud-duplicate', path: c.path, id: c.ids.join(', '), detail: 'Two cloud items have this same path, which serialization can\'t handle, so this path (and everything under it) was not synced.', fix: 'In the cloud, rename or delete one of the two items, then sync again.' });
         }
         fs.rmSync(ws.itemsDir, { recursive: true, force: true });
       }
@@ -383,6 +395,7 @@ async function executeSync(project, profile, planned, {
     if (skipPush) {
       step('push', 'skipped', 'dry run: nothing changed locally');
       if (conflictsFound.length) warn(`Dry run: ${conflictsFound.length} conflict(s) would need a decision (replace or skip) on a real sync.`);
+      for (const c of conflictsFound) issue({ type: 'conflict-pending', severity: 'info', path: c.path, id: c.localId, items: c.localItems, detail: `Local item ${c.localId} has the same path as cloud item ${c.cloudId}.`, fix: 'On a real sync you\'ll be asked to replace the local item or keep it.' });
     } else {
       step('push', 'running', profile.target);
       for (let attempt = 0; ; attempt++) {
@@ -422,11 +435,40 @@ async function executeSync(project, profile, planned, {
 
     if (!skipPush) setLastSync(project.root, profile.name || 'adhoc', startedAt, { includes: planned.plan.includes.length, items: pulled, mode: planned.mode });
     writeRunReport(ws, planned, pulled, { conflicts: conflictsFound, decision: decisionTaken, warnings });
+    const report = finishReport('completed', null, pulled);
+    // Pulled item files are only needed during the run. Free the disk space (dry runs keep them to inspect).
+    if (!skipPush) cleanupWorkspaces(ws.base);
     emit({ type: 'done', pulled, conflicts: conflictsFound.length, warnings });
-    return { pulled, workspace: ws.dir, conflicts: conflictsFound, decision: decisionTaken, warnings, orphans };
+    return { pulled, workspace: ws.dir, conflicts: conflictsFound, decision: decisionTaken, warnings, orphans, report };
   } catch (e) {
+    issue({ type: 'error', severity: 'error', path: '', detail: e.message, fix: e.hint || 'See the Log tab for the full output.' });
+    try { e.report = finishReport('failed', e.message, countYaml(ws.itemsDir)); } catch { /* best effort */ }
     emit({ type: 'error', message: e.message });
     throw e;
+  }
+
+  function finishReport(status, error, pulledFiles) {
+    const report = {
+      at: startedAt, durationMs: Date.now() - t0, status, error,
+      project: project.root, profile: profile.name || 'Quick sync', source: profile.source, target: profile.target,
+      mode: planned.mode, dryRun: !!skipPush,
+      counts: {
+        includes: planned.plan.includes.length, pulledFiles, alreadyLocal: planned.alreadyLocal || 0,
+        conflicts: conflictsFound.length, skippedItems: issues.filter((i) => ['orphan', 'cloud-duplicate', 'conflict-kept'].includes(i.type)).reduce((a, i) => a + (i.items || 1), 0),
+      },
+      issues,
+    };
+    report.file = saveReport(project.root, report);
+    emit({ type: 'report', report });
+    return report;
+  }
+}
+
+/** Remove pulled item files from every DevSync workspace of this project (keeps reports and backups). */
+function cleanupWorkspaces(base) {
+  for (const d of fs.readdirSync(base, { withFileTypes: true })) {
+    if (!d.isDirectory() || !/^(workspace|workspace-extra|local-snapshot|backup-snapshot|cleanup-\d+)$/.test(d.name)) continue;
+    fs.rmSync(path.join(base, d.name, 'items'), { recursive: true, force: true });
   }
 }
 

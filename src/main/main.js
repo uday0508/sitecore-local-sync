@@ -7,6 +7,8 @@ const { loadProject } = require('../core/project');
 const { listProfiles, saveProfile, deleteProfile, getLastSync } = require('../core/profiles');
 const { createSourceClient, createLocalClient, planSync, executeSync } = require('../core/sync');
 const { listProjects, listEnvironments, connectEnvironment } = require('../core/environments');
+const { projectDataDir, migrateLegacy, removeLegacy } = require('../core/paths');
+const { toHtml, toCsv, loadLastReport } = require('../core/report');
 
 let win;
 const session = { project: null, client: null, sourceName: null, abort: null, planned: null };
@@ -39,7 +41,10 @@ function ok(fn) {
 
 function projectInfo() {
   const p = session.project;
+  const legacy = migrateLegacy(p.root); // older versions wrote <project>/.devsync
   return {
+    legacy: legacy.found ? { path: legacy.path, bytes: legacy.bytes } : null,
+    lastReport: loadLastReport(p.root),
     root: p.root, endpoints: p.endpoints, hasUserJson: p.hasUserJson, hasToolManifest: p.hasToolManifest,
     profiles: listProfiles(p.root).map((pr) => ({ ...pr, lastSyncAt: getLastSync(p.root, pr.name) })),
   };
@@ -168,8 +173,17 @@ ipcMain.handle('sync:cancel', ok(async () => {
   if (session.abort) session.abort.abort();
   return true;
 }));
-ipcMain.handle('shell:open', ok(async ({ target }) => {
-  const allowed = target === 'workspace' ? path.join(session.project.root, '.devsync') : null;
-  if (allowed) await shell.openPath(allowed);
-  return true;
+ipcMain.handle('shell:open', ok(async () => { await shell.openPath(projectDataDir(session.project.root)); return true; }));
+ipcMain.handle('project:removeLegacy', ok(async () => { removeLegacy(session.project.root); return true; }));
+ipcMain.handle('report:save', ok(async ({ report }) => {
+  const stamp = String(report.at).slice(0, 16).replace(/[:T]/g, '-');
+  const r = await dialog.showSaveDialog(win, {
+    title: 'Save sync report',
+    defaultPath: path.join(app.getPath('documents'), `devsync-report-${stamp}.html`),
+    filters: [{ name: 'Web page (HTML)', extensions: ['html'] }, { name: 'Spreadsheet (CSV)', extensions: ['csv'] }],
+  });
+  if (r.canceled || !r.filePath) return null;
+  fs.writeFileSync(r.filePath, /\.csv$/i.test(r.filePath) ? toCsv(report) : toHtml(report));
+  shell.showItemInFolder(r.filePath);
+  return r.filePath;
 }));

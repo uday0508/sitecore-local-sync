@@ -234,3 +234,24 @@ dialog#conflictDialog { width: 760px; max-width: 92vw; }
 .choice span { color: var(--muted); font-size: 12px; }
 .summary .warn-note { width: 100%; color: var(--warn); font-size: 12px; }
 .auto-note { color: var(--muted); font-size: 12px; padding: 2px 2px; }
+.report-head { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.report-head .grow { flex: 1; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+.badge.ok { background: rgba(88,196,138,.15); color: var(--ok); }
+.badge.warn { background: rgba(224,166,75,.15); color: var(--warn); }
+.badge.err { background: rgba(224,100,91,.15); color: var(--danger); }
+table.plan td.fix { color: var(--muted); font-size: 12px; }
+table.plan tr.sev-warning td:first-child .tag { background: rgba(224,166,75,.15); color: var(--warn); }
+table.plan tr.sev-error td:first-child .tag { background: rgba(224,100,91,.15); color: var(--danger); }
+table.plan tr.sev-info td:first-child .tag { background: rgba(79,179,169,.13); color: var(--accent); }
+.attention { color: var(--warn); font-size: 12px; width: 100%; }
+.attention button.link { font-size: 12px; }
+table.report { table-layout: fixed; }
+table.report th:nth-child(1) { width: 15%; }
+table.report th:nth-child(2) { width: 37%; }
+table.report th:nth-child(3) { width: 26%; }
+table.report th:nth-child(4) { width: 22%; }
+table.report td.path { word-break: normal; overflow-wrap: anywhere; }
+table.report td .tag { white-space: normal; }
+table.report .ops { overflow-wrap: anywhere; }
+table.report td { overflow-wrap: anywhere; }
