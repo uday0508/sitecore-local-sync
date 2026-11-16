@@ -2,7 +2,7 @@
   "name": "devsync-sitecoreai",
   "displayName": "DevSync for SitecoreAI",
   "description": "Pull SitecoreAI cloud content into your local Docker CM, with every template, rendering, datasource and media item it depends on.",
-  "version": "0.2.3",
+  "version": "0.2.6",
   "publisher": "uday0508",
   "license": "Apache-2.0",
   "icon": "media/icon.png",

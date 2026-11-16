@@ -545,7 +545,7 @@ function showTab(name) {
 
 // ---------- report ----------
 const TYPE_LABEL = {
-  orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud', 'media-skipped': 'Media not synced',
+  orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud', 'media-skipped': 'Media not synced', 'broken-clone': 'Clone source missing', 'clone-unlinked': 'Clone not linked', 'invalid-file': 'Skipped: invalid file',
   'conflict-replaced': 'Replaced local item', 'conflict-kept': 'Kept local item', 'conflict-pending': 'Conflict (dry run)',
   'deleted-in-cloud': 'Removed: deleted in cloud', 'deleted-in-cloud-pending': 'Deleted in cloud (dry run)', 'deleted-in-cloud-manual': 'Deleted in cloud: remove manually',
   'language-added': 'Added language', 'language-check': 'Check language',

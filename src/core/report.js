@@ -27,6 +27,9 @@ const TYPE_LABEL = {
   'language-added': 'Added language',
   'language-check': 'Check language',
   'media-skipped': 'Media not synced',
+  'broken-clone': 'Clone source missing',
+  'clone-unlinked': 'Clone not linked',
+  'invalid-file': 'Skipped: invalid file',
   notice: 'Notice',
   error: 'Sync stopped',
 };

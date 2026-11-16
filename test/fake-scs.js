@@ -12,6 +12,7 @@
  *  - pull: "Non-unique paths" error when two source items share a path
  *  - push: "Non-unique paths" error when a file's path exists locally with another ID
  *  - push: "Template ID … did not exist" when a template is neither local nor in the files
+ *  - push: a clone's '__Source Item' must exist locally when the clone is written
  *  - push: parent must exist; CreateOnly / CreateAndUpdate / CreateUpdateAndDelete
  *  - token rotation on every run
  */
@@ -21,6 +22,22 @@ const path = require('path');
 const [, , tool, ser, op, flag, env] = process.argv;
 const cfg = JSON.parse(fs.readFileSync(process.env.FAKE_SCS_CONFIG, 'utf8'));
 fs.appendFileSync('calls.log', [tool, ser, op, flag, env].join(' ') + '\n');
+
+// ser validate [--fix]: file-system check only. Config: badFiles: [item paths] that fail validation;
+// fixable: true -> "--fix" repairs them (writes a marker), otherwise they keep failing.
+const listBad = () => {
+  const out = [];
+  const walk = (dir) => { if (!fs.existsSync(dir)) return; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const p = path.join(dir, e.name); if (e.isDirectory()) walk(p); else { const t = fs.readFileSync(p, 'utf8'); const ip = /^Path: (.+)$/m.exec(t); if (ip && (cfg.badFiles || []).some((b) => b.toLowerCase() === ip[1].trim().toLowerCase())) out.push(path.resolve(p)); } } };
+  walk('items');
+  return fs.existsSync('fixed.marker') ? [] : out;
+};
+const reportBad = (bad) => { for (const f of bad) { console.log('[DevSync] Item has an invalid parent ID.'); console.log(`Physical path: ${f}`); } };
+if (op === 'validate') {
+  const bad = listBad();
+  if (!bad.length) { console.log('Validation succeeded.'); process.exit(0); }
+  if (flag === '--fix' && cfg.fixable) { fs.writeFileSync('fixed.marker', '1'); console.log(`Fixed ${bad.length} item(s).`); process.exit(0); }
+  reportBad(bad); process.exit(1);
+}
 
 const uj = JSON.parse(fs.readFileSync('.sitecore/user.json', 'utf8'));
 const ep = uj.endpoints[env];
@@ -85,6 +102,8 @@ if (op === 'pull') {
 
 if (op === 'push') {
   if (isCloud) { console.log('DevSync must never push to the cloud'); process.exit(9); }
+  const bad = listBad();
+  if (bad.length) { if (cfg.listOnPush) reportBad(bad); console.log('Filesystem integrity validation found errors in serialized files! Use the validate command to fix these.'); process.exit(1); }
   let db = readDb();
   // Read files per include.
   const files = [];
@@ -96,7 +115,8 @@ if (op === 'push') {
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { walk(p); continue; }
         const t = fs.readFileSync(p, 'utf8');
-        files.push({ inc, id: /^ID: "(.+)"/m.exec(t)[1], path: /^Path: (.+)$/m.exec(t)[1].trim(), template: /^Template: "(.+)"/m.exec(t)[1] });
+        const src = /Hint: __Source Item\s*\n\s*Value:\s*"?\{?([0-9a-fA-F-]{36})/.exec(t);
+        files.push({ inc, id: /^ID: "(.+)"/m.exec(t)[1], path: /^Path: (.+)$/m.exec(t)[1].trim(), template: /^Template: "(.+)"/m.exec(t)[1], source: src && src[1] });
       }
     };
     walk(d);
@@ -115,6 +135,8 @@ if (op === 'push') {
   // 2. Templates are checked when each item is written (strict order, like real SCS), below.
   const tplOk = (t) => nid(t) === 'ffffffff-ffff-ffff-ffff-ffffffffffff' || db.some((i) => nid(i.id) === nid(t));
   const fail = (f) => { fs.writeFileSync(cfg.localDbFile, JSON.stringify(db, null, 2)); console.log(`GraphQL.ExecutionError: [A] ${f.path} (${f.id}): Template ID ${f.template} did not exist`); process.exit(1); };
+  const cloneOk = (f) => !f.source || db.some((i) => nid(i.id) === nid(f.source));
+  const cloneFail = (f, op) => { fs.writeFileSync(cfg.localDbFile, JSON.stringify(db, null, 2)); console.log(`GraphQL.ExecutionError: [${op}] ${f.path} (${f.id}): [Inner Exception] The clone source has incorrect value. Please fix '__Source Item' value ('Advanced' section) to continue. Item id:{${String(f.id).toUpperCase()}}`); console.log(`[Exception] Error while processing item ${f.path}`); process.exit(1); };
   // 3. Apply include by include, in module order.
   let created = 0, updated = 0, deleted = 0;
   for (const inc of mod.items.includes) {
@@ -133,17 +155,19 @@ if (op === 'push') {
       if (!tplOk(f.template) && !(existing && inc.allowedPushOperations === 'CreateOnly')) fail(f);
       if (existing) {
         if (inc.allowedPushOperations === 'CreateOnly') continue;
+        if (!cloneOk(f)) cloneFail(f, 'U');
         const oldPath = existing.path;
         db.forEach((it) => { if (depth(it.path, oldPath) > 0) it.path = f.path + it.path.slice(oldPath.length); });
-        existing.path = f.path; existing.template = f.template; updated++;
+        existing.path = f.path; existing.template = f.template; existing.source = f.source || null; updated++;
         continue;
       }
       const parent = f.path.split('/').slice(0, -1).join('/');
       if (parent.split('/').length > 3 && !db.some((it) => low(it.path) === low(parent))) {
         console.log(`Cannot create ${f.path}: parent item ${parent} does not exist.`); process.exit(1);
       }
+      if (!cloneOk(f)) cloneFail(f, 'A');
       const parentItem = db.find((it) => low(it.path) === low(parent));
-      db.push({ id: f.id, path: f.path, template: f.template, parent: parentItem && parentItem.id }); created++;
+      db.push({ id: f.id, path: f.path, template: f.template, parent: parentItem && parentItem.id, source: f.source || null }); created++;
     }
   }
   fs.writeFileSync(cfg.localDbFile, JSON.stringify(db, null, 2));

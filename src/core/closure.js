@@ -316,4 +316,4 @@ function missingTemplatesFromOutput(lines) {
   return [...out];
 }
 
-module.exports = { readPulledItems, readPulledContent, ensureTemplates, ensureReferences, ensureLanguages, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates };
+module.exports = { pullExtra, readPulledItems, readPulledContent, ensureTemplates, ensureReferences, ensureLanguages, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates };

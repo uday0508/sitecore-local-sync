@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.6
+
+- Clones: pushed without their clone link first and linked again after the push, so a clone saved before its source no longer stops the sync or leaves items without language versions. A clone whose source is missing in the cloud is synced as a regular item (reported) instead of being skipped.
+- "validate --fix": items whose files it removes are now listed in the report.
+
+## 0.2.5
+
+- "Filesystem integrity validation found errors" no longer stops the sync: DevSync runs "sitecore ser validate --fix" and pushes again; any file SCS still rejects is left out and listed in the report.
+- The push retries automatically when the local CM briefly stops answering.
+- When a sync does stop, the report shows the actual error line from the Sitecore CLI instead of only "exited with code 1".
+
+## 0.2.4
+
+- Clones whose source item is missing locally no longer stop the push ("The clone source has incorrect value"). DevSync pulls the missing source from the cloud, pushes sources before their clones, and skips clones whose source doesn't exist in the cloud, with a report entry explaining how to fix '__Source Item'.
+
 ## 0.2.3
 
 - **Resizable panels.** Drag the separator between *Pick content* and *Sync to local* (and next to *Activity*) to resize. Double-click resets; arrow keys work when a separator has focus (Shift for bigger steps). Sizes are remembered.

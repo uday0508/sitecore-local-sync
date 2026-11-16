@@ -19,6 +19,8 @@ Save the selection as a profile, and next time flip **"Only what changed since l
 - **Resizable panels**: drag the separators between panels (double-click to reset). Sizes are remembered.
 
 - **Include media** (on by default): turn it off to sync pages without the images and files they use. Faster for large sites; the report says how many media items were left out. Media you select yourself is always synced.
+- **Clones** sync with their versions and links: DevSync pushes clones without their clone link first (Sitecore saves items in its own order, and a clone saved before its source fails), then links them again once every source exists locally. Missing sources are pulled from the cloud. A clone whose source no longer exists in the cloud is synced as a regular item and listed in the report.
+- **Self-repairing push**: if SCS validation rejects the prepared item files, DevSync runs `sitecore ser validate --fix` and pushes again; files it still rejects are skipped and reported. Brief local CM outages are retried automatically.
 
 | | |
 |---|---|

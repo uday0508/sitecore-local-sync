@@ -11,7 +11,7 @@ const { findChangedItems } = require('./delta');
 const { buildPlan, toModuleJson } = require('./plan');
 const { maskDirectory, DEFAULT_MASK_OPTIONS } = require('./mask');
 const { prepareWorkspace, assertSafeTargets, runCli, syncTokensBack, pushTokensInto, countYaml } = require('./workspace');
-const { explainCliFailure } = require('./cliErrors');
+const { explainCliFailure, keyErrorLines } = require('./cliErrors');
 const { saveReport } = require('./report');
 const { loadManifest, saveManifest, itemsFromPulled, detectAfterPull, detectByIndex, mergeAfterDelta } = require('./manifest');
 const { normPath, throwIfAborted, isCancelled, CancelledError } = require('./util');
@@ -20,7 +20,8 @@ const {
   batchParents, cleanupModule, skipInWorkspace, ignorePathInModule, parentPath,
 } = require('./conflicts');
 const { getLastSync, setLastSync } = require('./profiles');
-const { ensureTemplates, ensureReferences, ensureLanguages, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates } = require('./closure');
+const { badClonesFromOutput, readWorkspaceItems, stripCloneLink, skipItems, invalidFilesFromOutput } = require('./clones');
+const { pullExtra, ensureTemplates, ensureReferences, ensureLanguages, missingTemplatesFromOutput, writeDefinitionPaths, dropItemsUsingTemplates } = require('./closure');
 
 /** Build a read-only Authoring API client for the source (cloud) endpoint. */
 function createSourceClient(project, sourceName, auth = {}, { fetchImpl = fetch, log } = {}) {
@@ -280,7 +281,12 @@ async function executeSync(project, profile, planned, {
   };
   const explain = (e, stage) => {
     const hint = explainCliFailure(recent, stage);
-    if (hint && !e.hint) { e.hint = hint; e.message = `${hint} (${e.message})`; }
+    // Put the line that says what went wrong in the message, not just "exited with code 1".
+    const key = keyErrorLines(recent);
+    if (e.hint || e.cliLines) return e;
+    e.cliLines = key;
+    const what = key.length ? key.join(' ') : e.message;
+    if (hint) { e.hint = hint; e.message = `${hint} (${what})`; } else if (key.length) e.message = `${what} (${e.message})`;
     return e;
   };
 
@@ -387,6 +393,141 @@ async function executeSync(project, profile, planned, {
     }
     return dropped.length;
   };
+  // Clones (see clones.js): before the push, clone links are removed from the YAML so SCS can save
+  // every item and version in any order; after the push they are restored with a small second push.
+  const unlinked = new Map(); // clone id -> { id, path, file, text }
+  const brokenIds = new Set();
+  let cloneRound = 0;
+  const unlink = (it, keep = true) => {
+    const text = fs.readFileSync(it.file, 'utf8');
+    const stripped = stripCloneLink(text);
+    if (stripped === text) return false;
+    fs.writeFileSync(it.file, stripped);
+    if (keep && !unlinked.has(it.id)) unlinked.set(it.id, { id: it.id, path: it.path, file: it.file, text });
+    return true;
+  };
+  const braces = (ids) => ids.map((s) => `{${String(s).toUpperCase()}}`).join(', ');
+  const markBroken = (c, gone) => {
+    brokenIds.add(c.id);
+    unlinked.delete(c.id);
+    unlink(c, false);
+    warn(`Clone ${c.path}: its source item ${braces(gone)} doesn't exist in the cloud, so it was synced as a regular item (without the clone link).`);
+    issue({ type: 'broken-clone', path: c.path, id: c.id, detail: `This item is a clone in the cloud, but its source item (${braces(gone)}) doesn't exist there. It was synced with its own field values as a regular item; values it would inherit from the missing source are not there.`, fix: `In the cloud Content Editor, open this item, turn on View > Standard fields, and fix '__Source Item' in the Advanced section (point it at the right source item, or clear it to unclone the item). Then sync again.` });
+  };
+  const prepareClones = async () => {
+    for (let round = 0; round < 4; round++) {
+      const items = readWorkspaceItems(ws.itemsDir);
+      const clones = items.filter((i) => i.sources.length && !unlinked.has(i.id) && !brokenIds.has(i.id));
+      if (!clones.length) return;
+      const inWs = new Set(items.map((i) => i.id));
+      let missing = [...new Set(clones.flatMap((c) => c.sources))].filter((s) => !inWs.has(s));
+      const localHas = new Set();
+      const api = missing.length ? await getLocalApi() : null;
+      if (api) {
+        const m = await api.resolveIds(missing).catch((e) => { if (isCancelled(e)) throw e; return new Map(); });
+        for (const s of missing) if (m.get(s)) localHas.add(s);
+      }
+      missing = missing.filter((s) => !localHas.has(s));
+      const cloudHas = missing.length && client ? await client.resolveIds(missing, { thorough: true }) : new Map();
+      for (const c of clones) {
+        const gone = c.sources.filter((s) => !inWs.has(s) && !localHas.has(s) && !cloudHas.get(s));
+        if (gone.length && (client || api)) { markBroken(c, gone); continue; }
+        if (c.sources.every((s) => localHas.has(s))) continue; // the source is already local: nothing to order
+        unlink(c);
+      }
+      const toPull = missing.filter((s) => cloudHas.get(s));
+      if (!toPull.length) break;
+      const using = (s) => clones.find((c) => c.sources.includes(s));
+      const deps = toPull.map((s) => ({ path: cloudHas.get(s).path, category: 'content', reason: `clone source of ${(using(s) || {}).path || 'a clone'}` }));
+      log(`Pulling ${deps.length} clone source item(s) that weren't in the selection: ${deps.slice(0, 5).map((d) => d.path).join(', ')}${deps.length > 5 ? '…' : ''}`);
+      await pullExtra({ project, profile, ws, run, deps, tag: `c${cloneRound++}` });
+    }
+    if (unlinked.size) log(`${unlinked.size} clone(s) will be pushed first without their clone link, and linked again once their source items are saved.`);
+  };
+  const relinkClones = async () => {
+    let list = [...unlinked.values()].filter((c) => !brokenIds.has(c.id));
+    if (!list.length) return;
+    step('push', 'running', `linking ${list.length} clone(s)`);
+    const notLinked = [];
+    for (let round = 0; list.length && round < 10; round++) {
+      const mod = { namespace: 'DevSync', items: { includes: list.map((c, i) => ({ name: `k${String(i).padStart(4, '0')}`, path: c.path, scope: 'SingleItem', allowedPushOperations: 'CreateAndUpdate' })) } };
+      const kws = prepareWorkspace(project, mod, { sourceName: profile.target, dirName: 'clone-links' });
+      list.forEach((c, i) => {
+        const d = path.join(kws.itemsDir, mod.items.includes[i].name);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, path.basename(c.file)), c.text);
+      });
+      try {
+        await run(kws, ['sitecore', 'ser', 'push', '-n', profile.target]);
+        log(`Linked ${list.length} clone(s) to their source items.`);
+        list = [];
+      } catch (e) {
+        if (isCancelled(e) || (signal && signal.aborted)) throw e;
+        const bad = new Set(badClonesFromOutput(recent).map((c) => c.id));
+        const failed = bad.size ? list.filter((c) => bad.has(c.id)) : list;
+        notLinked.push(...failed.map((c) => ({ ...c, why: bad.size ? 'Sitecore still rejected the clone source' : (keyErrorLines(recent, 1)[0] || e.message) })));
+        list = list.filter((c) => !failed.includes(c));
+      }
+    }
+    for (const c of notLinked) {
+      issue({ type: 'clone-unlinked', path: c.path, id: c.id, detail: `Synced with its content, but the clone link could not be restored locally (${c.why}). Locally it behaves as a regular item.`, fix: 'Sync again. If it repeats, check the item\'s __Source Item in the cloud.' });
+    }
+    if (notLinked.length) warn(`${notLinked.length} clone(s) were synced as regular items because their clone link could not be restored: ${notLinked.slice(0, 5).map((c) => c.path).join(', ')}${notLinked.length > 5 ? '…' : ''}`);
+  };
+  // A clone SCS still refused during the push (e.g. no API to check sources): unlink it and retry.
+  const repairClones = async (clones) => {
+    const byId = new Map(readWorkspaceItems(ws.itemsDir).map((i) => [i.id, i]));
+    let fixed = false;
+    for (const c of clones) {
+      const it = byId.get(c.id);
+      if (it && !unlinked.has(c.id) && unlink(it)) { log(`Clone ${it.path}: its source isn't saved yet. Pushing it without the clone link first.`, 'warn'); fixed = true; }
+    }
+    return fixed;
+  };
+
+  // "Filesystem integrity validation found errors in serialized files": SCS checks the item files
+  // before every push. First let SCS repair them (ser validate --fix, which removes duplicate copies
+  // of an item), then leave out any file it still rejects, and push again.
+  let integrityRounds = 0;
+  let transientRetries = 0;
+  const repairIntegrity = async (output) => {
+    integrityRounds++;
+    if (integrityRounds === 1) {
+      log('SCS found problems in the prepared item files. Running "sitecore ser validate --fix" and pushing again.', 'warn');
+      const before = readWorkspaceItems(ws.itemsDir);
+      try { await run(ws, ['sitecore', 'ser', 'validate', '--fix']); } catch (err) { if (isCancelled(err)) throw err; /* still retry: --fix may exit 1 after fixing */ }
+      // --fix deletes files it can't place (an orphan whose parent isn't serialized, a duplicate copy).
+      // An item whose every copy was deleted is not synced: say so instead of losing it silently.
+      const left = new Set(readWorkspaceItems(ws.itemsDir).map((i) => i.id));
+      const gone = before.filter((i) => !left.has(i.id));
+      const tops = gone.filter((g) => !gone.some((o) => o !== g && g.path.toLowerCase().startsWith(o.path.toLowerCase() + '/')));
+      for (const g of tops) issue({ type: 'invalid-file', path: g.path, id: g.id, detail: 'SCS validation removed this item\'s file (usually because its parent item wasn\'t part of the sync), so it was not synced. Your local copy was left as it is.', fix: 'Select its parent item too, then sync again.' });
+      if (tops.length) warn(`SCS validation removed ${gone.length} item file(s) it couldn't place: ${tops.slice(0, 5).map((g) => g.path).join(', ')}${tops.length > 5 ? '…' : ''}`);
+      issue({ type: 'notice', severity: 'info', path: '', detail: 'SCS validation found problems in the prepared item files. DevSync repaired them with "sitecore ser validate --fix" and pushed again.', fix: 'Nothing to do.' });
+      return true;
+    }
+    if (integrityRounds === 2) {
+      let files = invalidFilesFromOutput(output, ws.itemsDir);
+      if (!files.length) {
+        try { await run(ws, ['sitecore', 'ser', 'validate']); } catch (err) { if (isCancelled(err)) throw err; }
+        files = invalidFilesFromOutput(recent, ws.itemsDir);
+      }
+      const byFile = new Map(readWorkspaceItems(ws.itemsDir).map((i) => [path.resolve(i.file).toLowerCase(), i]));
+      const bad = files.map((f) => byFile.get(path.resolve(f).toLowerCase())).filter(Boolean);
+      if (!bad.length) return false;
+      const roots = [...new Set(bad.map((b) => b.path))];
+      const removed = skipItems(ws, roots, ignorePathInModule);
+      warn(`Left out ${roots.length} item(s) whose files SCS still rejects (${removed} file(s)): ${roots.slice(0, 5).join(', ')}${roots.length > 5 ? '…' : ''}`);
+      for (const b of bad) issue({ type: 'invalid-file', path: b.path, id: b.id, detail: 'SCS validation rejected this item\'s serialized file even after "validate --fix", so it (and anything under it) was not synced. Your local copy was left as it is.', fix: 'Sync again. If it repeats, check this item in the cloud (duplicate names, very long paths or unusual characters are the usual causes).' });
+      return true;
+    }
+    return false;
+  };
+  const isTransient = (lines) => /actively refused|ECONNRESET|socket hang up|timed out|The operation was canceled|502 Bad Gateway|503 Service Unavailable|504 Gateway/i.test(lines.join('\n'));
+  const waitFor = (ms, sig) => new Promise((res, rej) => {
+    const t = setTimeout(res, ms);
+    if (sig) sig.addEventListener('abort', () => { clearTimeout(t); rej(new CancelledError()); }, { once: true });
+  });
   let conflictsFound = [];
   let decisionTaken = null;
 
@@ -464,6 +605,9 @@ async function executeSync(project, profile, planned, {
       step('mask', 'done', `${r.changes} value(s) masked in ${r.files} file(s)`);
     } else step('mask', 'skipped');
 
+    // Clones: pull sources that are missing, and unlink clones whose source is pushed in this run.
+    await prepareClones();
+
     // 4. Check: does the local CM have items at the same paths with different IDs?
     if (!skipPreflight) {
       step('check', 'running', 'comparing with your local CM');
@@ -506,11 +650,28 @@ async function executeSync(project, profile, planned, {
     } else {
       step('push', 'running', profile.target);
       for (let attempt = 0; ; attempt++) {
-        try { await run(ws, ['sitecore', 'ser', 'push', '-n', profile.target]); break; } catch (e) {
+        try {
+          await run(ws, ['sitecore', 'ser', 'push', '-n', profile.target]);
+          break;
+        } catch (e) {
+          if (isCancelled(e) || (signal && signal.aborted)) throw e;
           if (attempt >= maxRepairs) throw explain(e, 'push');
           const ids = missingTemplatesFromOutput(recent);
           const cols = collisionsFromOutput(recent);
-          if (ids.length && client) {
+          const clones = badClonesFromOutput(recent);
+          const integrity = /Filesystem integrity validation found errors/i.test(recent.join('\n'));
+          if (integrity && !ids.length && !cols.length) {
+            step('push', 'running', 'repairing item files');
+            if (!(await repairIntegrity(recent.slice()))) throw explain(e, 'push');
+          } else if (isTransient(recent) && transientRetries < 2) {
+            transientRetries++;
+            log(`The local CM didn't answer (${keyErrorLines(recent, 1)[0] || e.message}). Retrying the push in ${5 * transientRetries}s…`, 'warn');
+            step('push', 'running', 'waiting for the local CM');
+            await waitFor(5000 * transientRetries, signal);
+          } else if (clones.length && !ids.length && !cols.length) {
+            step('push', 'running', 'fixing clones');
+            if (!(await repairClones(clones))) throw explain(e, 'push');
+          } else if (ids.length && client) {
             log(`Local CM is missing template(s) ${ids.join(', ')}. Pulling them and retrying.`, 'warn');
             step('push', 'running', 'adding missing templates');
             const added = await closure(ids);
@@ -537,6 +698,7 @@ async function executeSync(project, profile, planned, {
           step('push', 'running', `retrying (${attempt + 1})`);
         }
       }
+      await relinkClones();
       step('push', 'done');
 
       // Apply cloud deletions locally: only items DevSync synced (same ID), to the Recycle Bin.

@@ -193,12 +193,12 @@ if (op === 'push') {
 module.exports.fakeDotnetTree = fakeDotnetTree;
 
 /** SCS simulator instance: cloud items + a stateful local DB. Returns { dotnet, local(), setLocal() }. */
-function scsSim({ cloud, local = [], localDown = false }) {
+function scsSim({ cloud, local = [], localDown = false, ...extra }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scssim-'));
   const cfgFile = path.join(dir, 'cfg.json');
   const localDbFile = path.join(dir, 'local.json');
   fs.writeFileSync(localDbFile, JSON.stringify(local, null, 2));
-  fs.writeFileSync(cfgFile, JSON.stringify({ cloud, localDbFile, cloudEnvs: ['prod'], localDown }));
+  fs.writeFileSync(cfgFile, JSON.stringify({ cloud, localDbFile, cloudEnvs: ['prod'], localDown, ...extra }));
   const dotnet = path.join(dir, 'dotnet');
   fs.writeFileSync(dotnet, `#!/bin/sh\nFAKE_SCS_CONFIG='${cfgFile}' exec node '${path.join(__dirname, 'fake-scs.js')}' "$@"\n`);
   fs.chmodSync(dotnet, 0o755);
