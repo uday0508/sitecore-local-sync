@@ -16,6 +16,10 @@ Save the selection as a profile, and next time flip **"Only what changed since l
 
 ## Features
 
+- **Resizable panels**: drag the separators between panels (double-click to reset). Sizes are remembered.
+
+- **Include media** (on by default): turn it off to sync pages without the images and files they use. Faster for large sites; the report says how many media items were left out. Media you select yourself is always synced.
+
 | | |
 |---|---|
 | Tree picker | Browse the cloud content tree with site shortcuts or by path. For each selection choose *this item only*, *with children* or *with everything below*. |

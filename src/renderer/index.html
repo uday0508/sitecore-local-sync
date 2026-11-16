@@ -53,6 +53,9 @@
       <div class="tree" id="tree"><div class="empty">Connect to browse your content.</div></div>
     </section>
 
+    <div class="gutter v" data-g="g1" role="separator" aria-orientation="vertical" aria-label="Resize Pick content and Sync to local" tabindex="0" title="Drag to resize · double-click to reset"></div>
+    <div class="gutter h" data-g="g3" role="separator" aria-orientation="horizontal" aria-label="Resize Pick content and Sync to local" tabindex="0" title="Drag to resize · double-click to reset"></div>
+
     <!-- MIDDLE: sync -->
     <section class="card pane sync-pane">
         <div class="card-head"><h2><span class="num">2</span> Sync to local</h2><span class="count" id="selCount">0 selected</span></div>
@@ -66,19 +69,28 @@
           <span class="switch-text"><b>Only what changed since last sync</b><small id="lastSyncText">Run a full sync once first.</small></span>
         </label>
         <label class="switch">
+          <input type="checkbox" id="includeMedia" checked />
+          <span class="track"></span>
+          <span class="switch-text"><b>Include media</b><small>Images and files the pages use. Turn off for a faster sync of large sites; images then show as missing locally.</small></span>
+        </label>
+        <label class="switch">
           <input type="checkbox" id="maskOn" />
           <span class="track"></span>
           <span class="switch-text"><b>Mask personal data</b><small>Blanks fields like Email and Phone and scrubs email addresses before content reaches your machine.</small></span>
         </label>
 
-        <button class="btn primary big full" id="syncBtn" title="Brings everything the selected items need: templates, renderings, datasources, media and parent folders. Nothing on your machine is deleted without asking.">Sync to local</button>
-        <div class="sub-actions">
-          <button class="link" id="previewBtn">Preview first</button>
-          <span>·</span>
-          <button class="link" id="dryRunBtn">Dry run (pull only)</button>
-          <button class="link danger hidden" id="cancelBtn">Cancel</button>
+        <div class="sync-actions">
+          <button class="btn primary big full" id="syncBtn" title="Brings everything the selected items need: templates, renderings, datasources, media and parent folders. Nothing on your machine is deleted without asking.">Sync to local</button>
+          <div class="sub-actions">
+            <button class="link" id="previewBtn">Preview first</button>
+            <span>·</span>
+            <button class="link" id="dryRunBtn">Dry run (pull only)</button>
+            <button class="link danger hidden" id="cancelBtn">Cancel</button>
+          </div>
         </div>
     </section>
+
+    <div class="gutter v" data-g="g2" role="separator" aria-orientation="vertical" aria-label="Resize Activity" tabindex="0" title="Drag to resize · double-click to reset"></div>
 
     <!-- RIGHT: activity -->
     <section class="card pane activity-pane">

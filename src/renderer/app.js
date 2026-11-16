@@ -190,12 +190,31 @@ async function addEnvironment(environmentId) {
 }
 
 // ---------- tree ----------
+// A few sites: one-click chips. Many sites (multi-region solutions): a compact picker, so the
+// content tree keeps its height.
+const MAX_SITE_CHIPS = 6;
 function renderSites(sites) {
-  $('sites').replaceChildren(...sites.map((s) => el('button', { class: 'chip', title: s.rootPath, onclick: () => loadTreeRoot(s.rootPath) }, s.name)));
+  const box = $('sites');
+  if (sites.length <= MAX_SITE_CHIPS) {
+    box.replaceChildren(...sites.map((s) => el('button', { class: 'chip', title: s.rootPath, 'data-root': s.rootPath, onclick: () => loadTreeRoot(s.rootPath) }, s.name)));
+    return;
+  }
+  const sorted = [...sites].sort((a, b) => a.name.localeCompare(b.name));
+  const sel = el('select', { class: 'site-select', id: 'siteSelect', title: 'Site', onchange: (e) => { if (e.target.value) loadTreeRoot(e.target.value); } },
+    el('option', { value: '/sitecore/content' }, `All content · ${sites.length} sites`),
+    ...sorted.map((s) => el('option', { value: s.rootPath }, `${s.name}  ·  ${s.rootPath.replace(/^\/sitecore\/content\//i, '')}`)));
+  box.replaceChildren(el('label', { class: 'site-picker' }, el('span', {}, 'Site'), sel));
+}
+function markSite(path) {
+  const p = String(path || '').toLowerCase();
+  for (const c of document.querySelectorAll('#sites .chip')) c.classList.toggle('on', String(c.dataset.root).toLowerCase() === p);
+  const sel = $('siteSelect');
+  if (sel && [...sel.options].some((o) => o.value.toLowerCase() === p)) sel.value = [...sel.options].find((o) => o.value.toLowerCase() === p).value;
 }
 
 async function loadTreeRoot(path) {
   if (!state.connected) return;
+  markSite(path);
   const tree = $('tree');
   tree.replaceChildren(el('div', { class: 'empty' }, 'Loading…'));
   try {
@@ -282,7 +301,7 @@ function currentProfile() {
     target: $('target').value,
     language: 'en',
     selections: [...state.selections.values()],
-    dependencies: {},
+    dependencies: $('includeMedia').checked ? {} : { media: false },
     pushMode: 'safe',
     includeAncestors: true,
     onConflict: 'ask',
@@ -295,6 +314,7 @@ function applyProfile(p) {
   if (p.target && [...$('target').options].some((o) => o.value === p.target)) $('target').value = p.target;
   state.selections = new Map((p.selections || []).map((s) => [s.id, { ...s }]));
   $('maskOn').checked = !!(p.mask && p.mask.enabled);
+  $('includeMedia').checked = !(p.dependencies && p.dependencies.media === false);
   renderLastSync(p);
   renderSelection();
   syncTreeChecks();
@@ -460,7 +480,7 @@ function renderPlan(p) {
 // While a preview or sync runs, nothing that feeds it can change: project, connection, site,
 // tree, selection, profile and options are locked. Only Cancel (and a conflict answer) work.
 const LOCK_INERT = ['pathInput', 'sites', 'tree', 'selection'];
-const LOCK_DISABLE = ['syncBtn', 'previewBtn', 'dryRunBtn', 'profileSelect', 'saveProfile', 'deleteProfile', 'projectPill', 'connPill', 'optDelta', 'maskOn', 'welcomeOpen'];
+const LOCK_DISABLE = ['syncBtn', 'previewBtn', 'dryRunBtn', 'profileSelect', 'saveProfile', 'deleteProfile', 'projectPill', 'connPill', 'optDelta', 'maskOn', 'includeMedia', 'welcomeOpen'];
 // On a narrow screen Activity sits below the fold: bring it into view when a run starts.
 function revealActivity() {
   const a = document.querySelector('.activity-pane');
@@ -525,7 +545,7 @@ function showTab(name) {
 
 // ---------- report ----------
 const TYPE_LABEL = {
-  orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud',
+  orphan: 'Skipped: orphaned item', 'cloud-duplicate': 'Skipped: duplicate name in cloud', 'media-skipped': 'Media not synced',
   'conflict-replaced': 'Replaced local item', 'conflict-kept': 'Kept local item', 'conflict-pending': 'Conflict (dry run)',
   'deleted-in-cloud': 'Removed: deleted in cloud', 'deleted-in-cloud-pending': 'Deleted in cloud (dry run)', 'deleted-in-cloud-manual': 'Deleted in cloud: remove manually',
   'language-added': 'Added language', 'language-check': 'Check language',
@@ -589,6 +609,7 @@ function showConflicts(list) {
 
 // ---------- wiring ----------
 function wire() {
+  wireGutters();
   $('projectPill').addEventListener('click', pickProject);
   $('welcomeOpen').addEventListener('click', pickProject);
   $('connPill').addEventListener('click', () => $('connDialog').showModal());
@@ -656,6 +677,96 @@ async function externalCommand(cmd) {
   if (cmd.preview) await preview(); else await sync(false);
 }
 
+// ---------- resizable panes ----------
+// Drag (or use the arrow keys on) a separator to resize; double-click resets it. Sizes are CSS
+// variables on #main, remembered in settings, and re-clamped when the window size changes.
+const LAYOUT_VARS = ['--col-tree', '--col-sync', '--col-left', '--row-tree', '--tree-h'];
+let layoutVals = {};
+const layoutMode = () => (window.innerWidth <= 860 ? 'narrow' : window.innerWidth <= 1280 ? 'medium' : 'wide');
+const clampN = (v, lo, hi) => Math.round(Math.max(lo, Math.min(hi, v)));
+
+function applyLayout() {
+  const main = $('main');
+  for (const k of LAYOUT_VARS) { if (layoutVals[k]) main.style.setProperty(k, layoutVals[k]); else main.style.removeProperty(k); }
+  const rows = !!layoutVals['--row-tree'];
+  main.classList.toggle('rows-set', rows);
+  if (rows) main.style.setProperty('--row-sync', 'minmax(140px, 1fr)'); else main.style.removeProperty('--row-sync');
+}
+function setLayoutVar(k, px) { if (px == null) delete layoutVals[k]; else layoutVals[k] = `${px}px`; applyLayout(); }
+function saveLayout() { saveSettings({ layout: { ...layoutVals } }); }
+
+function resizeTo(g, x, y) {
+  const main = $('main'); const r = main.getBoundingClientRect();
+  const cs = getComputedStyle(main); const pad = parseFloat(cs.paddingLeft) || 0;
+  const mode = layoutMode();
+  const tree = main.querySelector('.pane').getBoundingClientRect();
+  if (g === 'g1' && mode === 'wide') {
+    setLayoutVar('--col-tree', clampN(x - r.left - pad - 7, 260, r.width - 2 * pad - 28 - 320 - 360));
+  } else if (g === 'g2' && mode === 'wide') {
+    const sync = document.querySelector('.sync-pane').getBoundingClientRect();
+    setLayoutVar('--col-sync', clampN(x - sync.left - 7, 320, r.right - pad - 360 - 14 - sync.left));
+  } else if (g === 'g2' && mode === 'medium') {
+    setLayoutVar('--col-left', clampN(x - r.left - pad - 6, 300, r.width - 2 * pad - 12 - 360));
+  } else if (g === 'g3' && mode === 'medium') {
+    setLayoutVar('--row-tree', clampN(y - tree.top - 6, 140, main.clientHeight - 2 * pad - 12 - 140));
+  } else if (g === 'g3' && mode === 'narrow') {
+    setLayoutVar('--tree-h', clampN(y - tree.top - 6, 200, window.innerHeight * 0.85));
+  }
+}
+function resetGutter(g) {
+  const mode = layoutMode();
+  const key = { g1: '--col-tree', g2: mode === 'wide' ? '--col-sync' : '--col-left', g3: mode === 'narrow' ? '--tree-h' : '--row-tree' }[g];
+  setLayoutVar(key, null);
+}
+// After a window resize, pull saved sizes back inside what fits.
+function clampLayout() {
+  for (const g of document.querySelectorAll('.gutter')) {
+    if (!g.offsetParent) continue;
+    const b = g.getBoundingClientRect();
+    const mode = layoutMode();
+    const relevant = (g.dataset.g === 'g1' && layoutVals['--col-tree']) || (g.dataset.g === 'g2' && layoutVals[mode === 'wide' ? '--col-sync' : '--col-left'])
+      || (g.dataset.g === 'g3' && layoutVals[mode === 'narrow' ? '--tree-h' : '--row-tree']);
+    if (relevant) resizeTo(g.dataset.g, b.left + b.width / 2, b.top + b.height / 2);
+  }
+}
+// Show a divider above the pinned Sync button only when the panel actually scrolls.
+function watchSyncScroll() {
+  const pane = document.querySelector('.sync-pane');
+  const update = () => pane.classList.toggle('scrolls', pane.scrollHeight > pane.clientHeight + 2 && pane.scrollTop + pane.clientHeight < pane.scrollHeight - 2);
+  pane.addEventListener('scroll', update);
+  new ResizeObserver(update).observe(pane);
+  new MutationObserver(update).observe(pane, { childList: true, subtree: true });
+}
+function wireGutters() {
+  watchSyncScroll();
+  for (const g of document.querySelectorAll('.gutter')) {
+    g.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      try { g.setPointerCapture(e.pointerId); } catch { /* synthetic or already released pointer */ }
+      g.classList.add('dragging');
+      document.body.classList.add('resizing', g.classList.contains('v') ? 'v-resize' : 'h-resize');
+      const move = (ev) => resizeTo(g.dataset.g, ev.clientX, ev.clientY);
+      const up = () => {
+        g.removeEventListener('pointermove', move); g.removeEventListener('pointerup', up); g.removeEventListener('pointercancel', up);
+        g.classList.remove('dragging'); document.body.classList.remove('resizing', 'v-resize', 'h-resize');
+        saveLayout();
+      };
+      g.addEventListener('pointermove', move); g.addEventListener('pointerup', up); g.addEventListener('pointercancel', up);
+    });
+    g.addEventListener('dblclick', () => { resetGutter(g.dataset.g); saveLayout(); });
+    g.addEventListener('keydown', (e) => {
+      const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      const d = dir * (e.shiftKey ? 64 : 16); const b = g.getBoundingClientRect();
+      resizeTo(g.dataset.g, b.left + b.width / 2 + d, b.top + b.height / 2 + d);
+      saveLayout();
+    });
+  }
+  let t; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(clampLayout, 120); });
+}
+
 // ---------- startup: reopen last project and reconnect ----------
 async function start() {
   try { await startInner(); } finally { markStarted(); }
@@ -664,6 +775,8 @@ async function startInner() {
   wire();
   if (window.__DEVSYNC_DEMO__) $('demoBadge').classList.remove('hidden');
   try { state.settings = (await call(api.getSettings)) || {}; } catch { state.settings = {}; }
+  layoutVals = { ...(state.settings.layout || {}) };
+  applyLayout();
   setAuthMode(state.settings.authMode || 'cli', false);
   let info = null;
   try { info = await call(api.lastProject); } catch (e) { toast(e.message, 'err'); }

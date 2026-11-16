@@ -49,18 +49,43 @@ button { font: inherit; }
  * Medium (861-1280): Pick over a compact Sync on the left, Activity full height on the right,
  *                    so progress, the plan and the log are always on screen while you work.
  * Narrow (<= 860):   one column that scrolls; starting a run scrolls Activity into view.
+ * The separators (.gutter) between panes can be dragged; sizes live in CSS variables set by app.js.
  */
 .app-layout {
-  display: grid; gap: 14px; padding: 14px; height: calc(100% - var(--topbar));
-  grid-template-columns: minmax(300px, 32fr) minmax(360px, 30fr) minmax(400px, 38fr);
-  grid-template-areas: "tree sync activity";
+  display: grid; gap: 0; padding: 14px; height: calc(100% - var(--topbar));
+  grid-template-columns: minmax(260px, var(--col-tree, 32fr)) 14px minmax(320px, var(--col-sync, 30fr)) 14px minmax(360px, 38fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "tree g1 sync g2 activity";
 }
 .app-layout > .pane:first-child { grid-area: tree; }
 .sync-pane { grid-area: sync; overflow: auto !important; }
 .activity-pane { grid-area: activity; }
+.gutter { position: relative; z-index: 2; touch-action: none; outline: none; }
+.gutter::after { content: ""; position: absolute; border-radius: 2px; background: transparent; transition: background .12s; }
+.gutter.v { cursor: col-resize; }
+.gutter.v::after { top: 30%; bottom: 30%; left: 5px; width: 4px; }
+.gutter.h { cursor: row-resize; }
+.gutter.h::after { left: 30%; right: 30%; top: 5px; height: 4px; }
+.gutter:hover::after, .gutter:focus-visible::after, .gutter.dragging::after { background: var(--accent); opacity: .8; }
+.gutter.v:hover::after, .gutter.v.dragging::after { top: 0; bottom: 0; }
+.gutter.h:hover::after, .gutter.h.dragging::after { left: 0; right: 0; }
+.gutter[data-g="g1"] { grid-area: g1; }
+.gutter[data-g="g2"] { grid-area: g2; }
+.gutter[data-g="g3"] { grid-area: g3; display: none; }
+body.resizing, body.resizing * { user-select: none !important; }
+body.resizing.v-resize, body.resizing.v-resize * { cursor: col-resize !important; }
+body.resizing.h-resize, body.resizing.h-resize * { cursor: row-resize !important; }
 @media (max-width: 1280px) {
-  .app-layout { gap: 12px; padding: 12px; grid-template-columns: minmax(320px, 44fr) minmax(380px, 56fr); grid-template-rows: minmax(220px, 1fr) auto; grid-template-areas: "tree activity" "sync activity"; }
+  .app-layout { padding: 12px;
+    grid-template-columns: minmax(300px, var(--col-left, 44fr)) 12px minmax(360px, 56fr);
+    grid-template-rows: var(--row-tree, minmax(180px, 1fr)) 12px var(--row-sync, auto);
+    grid-template-areas: "tree g2 activity" "g3 g2 activity" "sync g2 activity"; }
+  .gutter[data-g="g1"] { display: none; }
+  .gutter[data-g="g3"] { display: block; }
+  .gutter.v::after { left: 4px; }
+  .gutter.h::after { top: 4px; }
   .sync-pane { max-height: 58vh; gap: 10px; padding: 14px; }
+  .app-layout.rows-set .sync-pane { max-height: none; }
   .sync-pane .auto-note { display: none; }
   .sync-pane .sel-list { max-height: 24vh; }
   .sync-pane .switch { padding: 8px 10px; }
@@ -69,9 +94,11 @@ button { font: inherit; }
   .sync-pane .btn.big { padding-top: 9px; padding-bottom: 9px; }
 }
 @media (max-width: 860px) {
-  .app-layout { height: auto; grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "tree" "sync" "activity"; }
-  .app-layout > .pane:first-child { height: 46vh; min-height: 300px; }
-  .sync-pane { max-height: none; }
+  .app-layout { height: auto; grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "tree" "g3" "sync" "activity"; }
+  .gutter[data-g="g2"] { display: none; }
+  .gutter[data-g="g3"] { height: 12px; }
+  .app-layout > .pane:first-child { height: var(--tree-h, 46vh); min-height: 200px; }
+  .sync-pane { max-height: none; margin-bottom: 12px; }
   .activity-pane { min-height: 75vh; }
   .steps li small { display: none; }
 }
@@ -150,6 +177,9 @@ button.link.left { align-self: flex-start; }
 .sites { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 99px; padding: 3px 11px; font-size: 12px; cursor: pointer; }
 .chip:hover { border-color: var(--accent-2); }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.site-picker { display: flex; flex-direction: row; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.site-picker select { flex: 1; min-width: 0; }
 .tree { flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: #12151c; padding: 6px 4px; font-size: 13px; }
 .node-row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 6px; }
 .node-row:hover { background: #1a1e28; }
@@ -298,3 +328,8 @@ body.locked .card-head .count::after { content: " · locked while running"; }
   .pill { max-width: 34vw; padding: 5px 10px; }
   .profile-bar select { width: 130px; }
 }
+
+/* The Sync button stays reachable when the Sync panel is short and scrolls. */
+.sync-actions { position: sticky; bottom: -16px; margin: auto -16px -16px; padding: 10px 16px 14px; background: var(--panel); border-top: 1px solid transparent; display: flex; flex-direction: column; gap: 8px; z-index: 1; }
+.sync-pane.scrolls .sync-actions { border-top-color: var(--line); box-shadow: 0 -8px 16px -12px rgba(0,0,0,.5); }
+@media (max-width: 1280px) { .sync-actions { bottom: -14px; margin: auto -14px -14px; padding: 8px 14px 12px; } }

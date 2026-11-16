@@ -247,7 +247,7 @@ async function pullExtra({ project, profile, ws, run, deps, tag }) {
  * the fr-FR layout) are pulled too, the same way the API scan does for the default language.
  * Content and media are pulled; renderings only when the local CM doesn't already have them.
  */
-async function ensureReferences({ project, profile, client, ws, run, localClient = null, isShipped = () => false, log = () => {}, maxRounds = 3 }) {
+async function ensureReferences({ project, profile, client, ws, run, localClient = null, isShipped = () => false, log = () => {}, maxRounds = 3, includeMedia = true, onSkippedMedia = () => {} }) {
   const { classify } = require('./dependencies');
   const attempted = new Set();
   let added = 0;
@@ -264,6 +264,11 @@ async function ensureReferences({ project, profile, client, ws, run, localClient
     let candidates = todo.map((id) => ({ id, info: found.get(id) })).filter((x) => x.info)
       .map((x) => ({ ...x, category: classify(x.info.path) }))
       .filter((x) => ['content', 'media', 'layout'].includes(x.category) && !isShipped(x.info.path));
+    if (!includeMedia) {
+      const media = candidates.filter((c) => c.category === 'media');
+      if (media.length) onSkippedMedia(media.map((c) => c.info.path));
+      candidates = candidates.filter((c) => c.category !== 'media');
+    }
     if (localClient && candidates.some((c) => c.category === 'layout')) {
       const local = await localClient.resolveIds(candidates.filter((c) => c.category === 'layout').map((c) => c.id)).catch(() => new Map());
       candidates = candidates.filter((c) => c.category !== 'layout' || !local.get(c.id));

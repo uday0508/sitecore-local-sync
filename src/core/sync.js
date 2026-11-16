@@ -117,6 +117,9 @@ async function pruneAlreadyLocal(client, localClient, plan, log) {
   return { dropped };
 }
 
+/** Media library items referenced by pages are pulled unless the profile says { dependencies: { media: false } }. */
+function includesMedia(profile) { return !(profile && profile.dependencies && profile.dependencies.media === false); }
+
 async function planSync(client, profile, { mode = 'full', projectRoot, since, log: logOut = () => {}, localClient = null, signal = null } = {}) {
   if (signal) { client.signal = signal; if (localClient) localClient.signal = signal; }
   // Every progress line is also a cancel checkpoint.
@@ -125,7 +128,7 @@ async function planSync(client, profile, { mode = 'full', projectRoot, since, lo
   if (!profile.selections || !profile.selections.length) throw new Error('Select at least one item to sync.');
   // Everything a page needs is always brought. Older profiles may still carry switches that
   // turned some of it off; those are ignored, because a partial set can't be pushed.
-  const depOpts = { ...DEFAULT_DEP_OPTIONS, ...(profile.dependencies || {}), templates: true, renderings: true, datasources: true, media: true, projectOnly: false, languages: [profile.language || 'en'] };
+  const depOpts = { ...DEFAULT_DEP_OPTIONS, ...(profile.dependencies || {}), templates: true, renderings: true, datasources: true, media: includesMedia(profile), projectOnly: false, languages: [profile.language || 'en'] };
 
   let changed = null;
   let deletions = null;
@@ -403,14 +406,19 @@ async function executeSync(project, profile, planned, {
       }
     }
     // 2. Every pulled item's template (and base templates) must be there, whatever the scan limits.
+    const skippedMedia = new Set((planned.skipped || []).filter((x) => x.why === 'media turned off').map((x) => String(x.path).toLowerCase()));
     for (const n of planned.languageNotices || []) issue({ type: 'notice', severity: 'info', path: '', detail: n, fix: 'Nothing to do. If an item changed only in another language was missed, run a full sync.' });
     await getLocalApi();
     if (client) {
       step('pull', 'running', 'checking references in all languages');
       try {
-        const refAdded = await ensureReferences({ project, profile, client, ws, run, localClient: localApi || null, isShipped, log: (m) => log(m) });
+        const refAdded = await ensureReferences({ project, profile, client, ws, run, localClient: localApi || null, isShipped, log: (m) => log(m), includeMedia: includesMedia(profile), onSkippedMedia: (paths) => paths.forEach((p) => skippedMedia.add(String(p).toLowerCase())) });
         if (refAdded) log(`Added ${refAdded} include(s) for items referenced in other languages or beyond the scan.`);
       } catch (e) { warn(`Could not check references in other languages (${e.message}).`); }
+    }
+    if (skippedMedia.size) {
+      log(`Media turned off: ${skippedMedia.size} referenced media item(s) were not pulled.`);
+      issue({ type: 'media-skipped', severity: 'info', path: '/sitecore/media library', detail: `Media was turned off, so ${skippedMedia.size} media item(s) referenced by the synced content were not pulled. Pages that use them show missing images locally.`, fix: 'Turn "Include media" back on and sync again when you need the images and files.' });
     }
     if (wantTemplates) {
       step('pull', 'running', 'checking templates of every pulled item');

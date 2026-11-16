@@ -26,6 +26,7 @@ const TYPE_LABEL = {
   'deleted-in-cloud-manual': 'Deleted in cloud: remove manually',
   'language-added': 'Added language',
   'language-check': 'Check language',
+  'media-skipped': 'Media not synced',
   notice: 'Notice',
   error: 'Sync stopped',
 };

@@ -16,6 +16,8 @@ DevSync opens as a **full editor tab** with the same three-column screen as the 
 - **Sync to local.** A scope per item, *Only what changed since last sync*, *Mask personal data*, then **Sync to local**, **Preview first** or **Dry run**.
 - **Activity.** Live steps (Plan → Pull → Mask → Check → Push), the plan, a run report and the full log.
 - **All dependencies.** Templates, base templates, renderings, datasources, media and parent folders are found automatically. Items your local CM already has with the same ID, such as Sitecore's own templates, are skipped.
+- **Resizable panels.** Drag the separators between panels; double-click resets. Sizes are remembered.
+- **Include media** (on by default). Turn it off to sync pages without the images and files they use. The report says how many were left out.
 - **Changes in every language**, and **cloud deletions**: items removed in the cloud go to the local Recycle Bin, but only items DevSync synced.
 - **Conflict handling.** If a local item has the same path but a different ID, you choose: replace it (backed up first, then sent to the Recycle Bin) or keep it.
 - **Profiles.** Save a selection and rerun it. Profiles are shared with the desktop app.

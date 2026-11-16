@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3
+
+- **Resizable panels.** Drag the separator between *Pick content* and *Sync to local* (and next to *Activity*) to resize. Double-click resets; arrow keys work when a separator has focus (Shift for bigger steps). Sizes are remembered.
+- The **Sync to local** button stays pinned at the bottom of its panel when the panel is short.
+
+## 0.2.2
+
+- **Include media** switch: turn it off to sync pages without the media library items they reference (faster for large sites). The report lists how many were left out. Media you select yourself is always synced. Saved with profiles.
+- Solutions with many sites get a compact **Site** picker instead of a wall of buttons, so the content tree keeps its height. The current site is highlighted.
+
 ## 0.2.1
 
 - **Layout that fits the editor.** With the Explorer or another panel open, *Pick content* sits above a compact *Sync to local* on the left, and *Activity* takes the full height on the right. Progress, the plan and the log stay on screen without scrolling.

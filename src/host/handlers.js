@@ -26,7 +26,13 @@ const { listProjects, listEnvironments, connectEnvironment } = require('../core/
 const { projectDataDir, migrateLegacy, removeLegacy } = require('../core/paths');
 const { toHtml, toCsv, loadLastReport } = require('../core/report');
 
-const SETTINGS_ALLOWED = ['lastSource', 'lastTarget', 'authMode', 'lastProfile', 'autoConnect'];
+const SETTINGS_ALLOWED = ['lastSource', 'lastTarget', 'authMode', 'lastProfile', 'autoConnect', 'layout'];
+// Pane sizes from the resizable separators: only known CSS variables with pixel values.
+const LAYOUT_KEYS = ['--col-tree', '--col-sync', '--col-left', '--row-tree', '--tree-h'];
+function cleanLayout(v) {
+  if (!v || typeof v !== 'object') return {};
+  return Object.fromEntries(Object.entries(v).filter(([k, x]) => LAYOUT_KEYS.includes(k) && /^\d{2,4}px$/.test(String(x))));
+}
 
 function isLoginExpired(e) {
   return !!e && (e.code === 'LOGIN_EXPIRED' || /login has expired|refresh token (was )?(corrupted|expired|invalid)|invalid refresh token|NotAuthenticated/i.test(String(e.message || e)));
@@ -81,7 +87,11 @@ function createHost(platform, factories = {}) {
 
   const handlers = {
     'settings:get': async () => platform.settings.get(),
-    'settings:set': async (patch) => platform.settings.set(Object.fromEntries(Object.entries(patch || {}).filter(([k]) => SETTINGS_ALLOWED.includes(k)))),
+    'settings:set': async (patch) => {
+      const clean = Object.fromEntries(Object.entries(patch || {}).filter(([k]) => SETTINGS_ALLOWED.includes(k)));
+      if ('layout' in clean) clean.layout = cleanLayout(clean.layout);
+      return platform.settings.set(clean);
+    },
 
     'project:last': async () => {
       notWhileRunning();
