@@ -14,6 +14,10 @@ const state = {
   busy: false,
 };
 
+// Resolves when startup (reopen project, auto-connect) is done; host commands wait for it.
+let markStarted;
+const started = new Promise((r) => { markStarted = r; });
+
 const SCOPES = [
   ['ItemAndDescendants', 'With everything below'],
   ['ItemAndChildren', 'With children'],
@@ -457,8 +461,17 @@ function renderPlan(p) {
 // tree, selection, profile and options are locked. Only Cancel (and a conflict answer) work.
 const LOCK_INERT = ['pathInput', 'sites', 'tree', 'selection'];
 const LOCK_DISABLE = ['syncBtn', 'previewBtn', 'dryRunBtn', 'profileSelect', 'saveProfile', 'deleteProfile', 'projectPill', 'connPill', 'optDelta', 'maskOn', 'welcomeOpen'];
+// On a narrow screen Activity sits below the fold: bring it into view when a run starts.
+function revealActivity() {
+  const a = document.querySelector('.activity-pane');
+  if (!a) return;
+  const r = a.getBoundingClientRect();
+  if (r.top > window.innerHeight - 160 || r.bottom < 80) a.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function setBusy(b) {
   state.busy = b;
+  if (b) revealActivity();
   document.body.classList.toggle('locked', b);
   for (const id of LOCK_INERT) { const x = $(id); if (x) x.inert = b; }
   for (const id of LOCK_DISABLE) { const x = $(id); if (x) x.disabled = b; }
@@ -603,10 +616,51 @@ function wire() {
   $('tabs').addEventListener('click', (e) => { const t = e.target.closest('button[data-tab]'); if (t) showTab(t.dataset.tab); });
   api.onEvent(onEvent);
   api.onConflicts(showConflicts);
+  if (api.onCommand) api.onCommand((cmd) => externalCommand(cmd).catch((e) => toast(e.message, 'err')));
+}
+
+// ---------- commands from the host (VS Code: "Pull latest" on a .yml, Page Builder links, re-login) ----------
+async function externalCommand(cmd) {
+  if (!cmd || typeof cmd !== 'object') return;
+  await started;
+  if (cmd.type === 'reconnect') {
+    if (state.project && !state.busy && !state.connected && $('source').value) await connect({ silent: true });
+    return;
+  }
+  if (cmd.type !== 'sync') return;
+  if (state.busy) { toast('A sync is running. Try again when it finishes.', 'err'); return; }
+  if (!state.project) { toast('Open your project first.', 'err'); return; }
+  if (cmd.source && $('source').value !== cmd.source) {
+    if (![...$('source').options].some((o) => o.value === cmd.source)) { toast(`${cmd.source} isn't connected to this project.`, 'err'); return; }
+    $('source').value = cmd.source;
+    state.connected = false;
+  }
+  if (!state.connected) await connect({ silent: true });
+  if (!state.connected) { openConnectionIfNeeded(); return; }
+  const items = [];
+  for (const it of cmd.items || []) {
+    let node = it;
+    if (!it.path) {
+      node = await call(api.children, { id: it.id, language: cmd.language }).catch(() => null);
+      if (!node) { toast(`Item ${it.id} was not found in ${$('source').value}.`, 'err'); return; }
+    }
+    items.push({ id: node.id, path: node.path, name: node.name || node.path.split('/').pop(), scope: it.scope || 'SingleItem' });
+  }
+  if (!items.length) return;
+  state.selections = new Map(items.map((i) => [i.id, i]));
+  $('profileSelect').value = '';
+  renderLastSync(null);
+  renderSelection();
+  syncTreeChecks();
+  if (cmd.label) toast(cmd.label);
+  if (cmd.preview) await preview(); else await sync(false);
 }
 
 // ---------- startup: reopen last project and reconnect ----------
 async function start() {
+  try { await startInner(); } finally { markStarted(); }
+}
+async function startInner() {
   wire();
   if (window.__DEVSYNC_DEMO__) $('demoBadge').classList.remove('hidden');
   try { state.settings = (await call(api.getSettings)) || {}; } catch { state.settings = {}; }

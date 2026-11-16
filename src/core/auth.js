@@ -34,6 +34,16 @@ async function postToken(fetchImpl, authority, body) {
   let json; try { json = JSON.parse(text); } catch { json = {}; }
   if (!res.ok || !json.access_token) {
     const why = json.error_description || json.error || text.slice(0, 200);
+    if ([400, 401, 403].includes(res.status) && body && body.grant_type === 'refresh_token') {
+      const e = new Error('Your Sitecore CLI login has expired. Run "dotnet sitecore cloud login" in the project folder, then connect again.');
+      e.code = 'LOGIN_EXPIRED'; e.detail = why;
+      throw e;
+    }
+    if ([400, 401, 403].includes(res.status) && body && body.grant_type === 'client_credentials') {
+      const e = new Error(`The automation client was rejected (${why}). Check the client ID and secret, and that the client belongs to this organization.`);
+      e.code = 'CLIENT_REJECTED';
+      throw e;
+    }
     throw new Error(`Token request failed (${res.status}): ${why}`);
   }
   return json;

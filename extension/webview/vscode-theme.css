@@ -1,0 +1,52 @@
+/* DevSync UI inside VS Code: follow the active color theme (light, dark, high contrast). */
+html.in-vscode {
+  --bg: var(--vscode-editor-background);
+  --panel: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  --panel-2: var(--vscode-input-background);
+  --line: var(--vscode-panel-border, var(--vscode-widget-border, rgba(128,128,128,.35)));
+  --text: var(--vscode-foreground);
+  --muted: var(--vscode-descriptionForeground);
+  --accent: var(--vscode-button-background);
+  --accent-2: var(--vscode-button-hoverBackground);
+  --inset: var(--vscode-editor-background);
+  --hover: var(--vscode-list-hoverBackground);
+  --mono: var(--vscode-editor-font-family, ui-monospace, Consolas, monospace);
+  --topbar: 46px;
+  color-scheme: light dark;
+}
+/* VS Code gives webview bodies 20px side padding by default; DevSync is a full-bleed app. */
+html.in-vscode body { padding: 0; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size, 13px); }
+html.in-vscode .topbar { background: var(--vscode-editorGroupHeader-tabsBackground, var(--bg)); }
+html.in-vscode .tree, html.in-vscode .switch, html.in-vscode .advanced, html.in-vscode .code, html.in-vscode .log,
+html.in-vscode .addenv, html.in-vscode .conflict-list { background: var(--inset); }
+html.in-vscode .logo span:last-child { background: var(--bg); }
+html.in-vscode .node-row:hover { background: var(--hover); }
+html.in-vscode .node.selected > .node-row { background: var(--vscode-list-inactiveSelectionBackground); }
+html.in-vscode .node.selected > .node-row .node-name { color: var(--vscode-list-inactiveSelectionForeground, var(--text)); }
+html.in-vscode .node-tpl, html.in-vscode .log time { color: var(--muted); }
+html.in-vscode .btn.primary, html.in-vscode .num { color: var(--vscode-button-foreground); }
+html.in-vscode .btn.primary:hover:not(:disabled) { background: var(--accent-2); }
+html.in-vscode .btn, html.in-vscode select, html.in-vscode input[type=text], html.in-vscode input[type=password] {
+  background: var(--vscode-input-background); color: var(--vscode-input-foreground); border-color: var(--vscode-input-border, var(--line));
+}
+html.in-vscode .btn.primary { background: var(--accent); border-color: var(--accent); }
+html.in-vscode .switch .track { background: var(--vscode-checkbox-background, var(--line)); }
+html.in-vscode .switch input:checked + .track { background: var(--accent); }
+html.in-vscode .switch input:checked + .track::after { background: var(--vscode-button-foreground); }
+html.in-vscode .steps li, html.in-vscode .steps li.skipped { border-top-color: var(--line); }
+html.in-vscode table.plan td, html.in-vscode .conflict-row { border-bottom-color: var(--line); }
+html.in-vscode .tag.ancestor, html.in-vscode .tag.system, html.in-vscode .tag.other, html.in-vscode .seg button.on {
+  background: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
+}
+html.in-vscode dialog { background: var(--vscode-editorWidget-background, var(--panel)); border-color: var(--vscode-editorWidget-border, var(--line)); }
+html.in-vscode .toast { background: var(--vscode-notifications-background, var(--panel)); color: var(--vscode-notifications-foreground, var(--text)); }
+html.in-vscode .pill:hover, html.in-vscode .btn:hover:not(:disabled) { border-color: var(--vscode-focusBorder); }
+html.in-vscode :focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+/* Light themes: darker status colours so tags and notes stay readable on white. */
+body.vscode-light { --ok: #1e7f4a; --warn: #9a5b00; --danger: #b42318; }
+body.vscode-light .tag.media { color: #5b3fc4; }
+body.vscode-light .tag.content { color: #1e7f4a; }
+body.vscode-light .tag.layout, body.vscode-light .tag.template { color: #9a5b00; }
+body.vscode-light .switch .track { box-shadow: inset 0 0 0 1px var(--line); }
+body.vscode-light .notice { color: #7a4a00; }

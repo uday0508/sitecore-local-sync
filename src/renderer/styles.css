@@ -12,6 +12,7 @@
   --ok: #58c48a;
   --radius: 12px;
   --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+  --topbar: 54px;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -21,7 +22,7 @@ code { font-family: var(--mono); font-size: 11.5px; background: var(--panel-2); 
 button { font: inherit; }
 
 /* ---------- top bar ---------- */
-.topbar { height: 54px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: #12151c; }
+.topbar { height: var(--topbar); display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: #12151c; }
 .brand { display: flex; align-items: center; gap: 9px; margin-right: 8px; }
 .brand-name { font-weight: 700; font-size: 15px; }
 .logo { width: 24px; height: 24px; position: relative; flex: none; }
@@ -43,19 +44,41 @@ button { font: inherit; }
 .profile-bar select { min-width: 190px; }
 .demo-badge { background: rgba(224,166,75,.15); color: var(--warn); border: 1px solid rgba(224,166,75,.35); padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
 
-/* ---------- layout ---------- */
+/* ---------- layout ----------
+ * Wide (> 1280px):   three columns, Pick | Sync | Activity, no page scroll.
+ * Medium (861-1280): Pick over a compact Sync on the left, Activity full height on the right,
+ *                    so progress, the plan and the log are always on screen while you work.
+ * Narrow (<= 860):   one column that scrolls; starting a run scrolls Activity into view.
+ */
 .app-layout {
-  display: grid; gap: 14px; padding: 14px; height: calc(100% - 54px);
+  display: grid; gap: 14px; padding: 14px; height: calc(100% - var(--topbar));
   grid-template-columns: minmax(300px, 32fr) minmax(360px, 30fr) minmax(400px, 38fr);
   grid-template-areas: "tree sync activity";
 }
 .app-layout > .pane:first-child { grid-area: tree; }
 .sync-pane { grid-area: sync; overflow: auto !important; }
 .activity-pane { grid-area: activity; }
-/* Narrower windows: tree on the left, sync over activity on the right. */
 @media (max-width: 1280px) {
-  .app-layout { grid-template-columns: minmax(300px, 38fr) 62fr; grid-template-rows: auto 1fr; grid-template-areas: "tree sync" "tree activity"; height: auto; min-height: calc(100% - 54px); }
-  .activity-pane { min-height: 420px; }
+  .app-layout { gap: 12px; padding: 12px; grid-template-columns: minmax(320px, 44fr) minmax(380px, 56fr); grid-template-rows: minmax(220px, 1fr) auto; grid-template-areas: "tree activity" "sync activity"; }
+  .sync-pane { max-height: 58vh; gap: 10px; padding: 14px; }
+  .sync-pane .auto-note { display: none; }
+  .sync-pane .sel-list { max-height: 24vh; }
+  .sync-pane .switch { padding: 8px 10px; }
+  .sync-pane .switch small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sync-pane .switch-text { min-width: 0; }
+  .sync-pane .btn.big { padding-top: 9px; padding-bottom: 9px; }
+}
+@media (max-width: 860px) {
+  .app-layout { height: auto; grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "tree" "sync" "activity"; }
+  .app-layout > .pane:first-child { height: 46vh; min-height: 300px; }
+  .sync-pane { max-height: none; }
+  .activity-pane { min-height: 75vh; }
+  .steps li small { display: none; }
+}
+/* Short windows: give the lists the room, not the descriptions. */
+@media (max-height: 760px) and (min-width: 861px) {
+  .sync-pane .auto-note { display: none; }
+  .sync-pane .switch small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 .pane { min-height: 0; display: flex; flex-direction: column; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
@@ -188,7 +211,7 @@ table.plan td.path { font-family: var(--mono); font-size: 11.5px; word-break: br
 .ops.del { color: var(--danger); }
 
 /* ---------- welcome ---------- */
-.welcome { position: fixed; inset: 54px 0 0 0; display: grid; place-items: center; background: var(--bg); z-index: 5; }
+.welcome { position: fixed; inset: var(--topbar) 0 0 0; display: grid; place-items: center; background: var(--bg); z-index: 5; }
 .welcome-card { text-align: center; max-width: 440px; padding: 32px; }
 .welcome-card h1 { font-size: 20px; margin: 8px 0; }
 .welcome-card p { color: var(--muted); margin: 0 0 20px; }
@@ -261,3 +284,17 @@ body.locked #tree, body.locked #sites, body.locked #selection, body.locked #path
 body.locked .pill:disabled, body.locked #profileSelect:disabled, body.locked .switch input:disabled + * { opacity: .55; cursor: not-allowed; }
 body.locked .card-head .count::after { content: " · locked while running"; }
 #cancelBtn:disabled { opacity: .7; cursor: progress; }
+
+/* Top bar on narrow screens: drop labels, let the pills and profile picker shrink. */
+@media (max-width: 1000px) {
+  .topbar { gap: 8px; padding: 0 10px; }
+  .pill { min-width: 0; flex: 0 1 auto; }
+  .profile-bar { min-width: 0; flex: 0 1 auto; }
+  .profile-bar select { min-width: 0; width: 160px; }
+}
+@media (max-width: 860px) {
+  .pill-label, .brand-name { display: none; }
+  .brand { margin-right: 0; }
+  .pill { max-width: 34vw; padding: 5px 10px; }
+  .profile-bar select { width: 130px; }
+}

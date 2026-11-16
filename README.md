@@ -169,6 +169,17 @@ To let the headless CLI call the local CM's API, trust the local dev certificate
 - Delta and deep scan use the `sitecore_master_index`. If the index is stale, DevSync falls back to walking the tree.
 - The Authoring API field `hasChildren` is detected at runtime. On schemas without it, every node shows an expand arrow.
 
+## VS Code extension
+
+The same app also runs inside VS Code, in [`extension/`](extension/README.md). It opens the same full-screen UI in an editor tab, themed to match VS Code, served by the same host layer (`src/host/handlers.js`). It adds **Pull latest from cloud** on any serialized `.yml`, a **Log in** prompt when the CLI login expires, and `vscode://` links for a Page Builder "Sync this page" handoff.
+
+```powershell
+cd extension
+npm install
+npm run package        # builds dist/extension.js and devsync-sitecoreai-<version>.vsix
+code --install-extension devsync-sitecoreai-0.1.0.vsix
+```
+
 ## Tests
 
 ```powershell
@@ -176,16 +187,27 @@ npm test                                  # engine tests: fake Authoring API + a
                                           # with a stateful local CM: scopes, rules, path/ID collisions,
                                           # templates, parents, create/update/delete, token rotation
 xvfb-run npx electron test/ui-smoke.js    # UI smoke test in demo mode (Linux CI)
+cd extension && npm test                  # extension host through a fake vscode API + real TLS tests
+cd extension && xvfb-run -a ../node_modules/.bin/electron --no-sandbox test/webview-smoke.js
+                                          # the real UI over the webview bridge, dark + light themes
 ```
 
 ## Project layout
 
 ```
 src/core/       engine (no Electron dependency): auth, GraphQL client, dependencies, delta, plan, mask, workspace, profiles, sync
+src/host/       request handlers shared by the desktop app and the VS Code extension
 src/main/       Electron main process + preload (context-isolated IPC)
 src/renderer/   UI (vanilla JS, strict CSP) + demo.js mock
 bin/devsync.js  headless CLI
+extension/      VS Code extension (bundles src/core with esbuild)
 test/           node:test suites and the UI smoke test
 ```
+
+## Roadmap ideas
+
+- Content Hub asset sync (pull DAM assets referenced by local pages)
+- "Sync this page" button as a Sitecore Marketplace app that hands off to VS Code or DevSync
+- Scheduled background sync
 
 License: Apache-2.0

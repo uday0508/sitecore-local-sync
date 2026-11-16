@@ -40,14 +40,16 @@ Useful environment variables:
 
 ```text
 src/core/       sync engine, plain Node.js (no Electron imports)
+src/host/       request handlers shared by the desktop app and the VS Code extension
 src/main/       Electron main process and preload (IPC)
 src/renderer/   UI, vanilla JavaScript, strict CSP
 bin/devsync.js  headless CLI
+extension/      VS Code extension: the same UI in a webview (webview/bridge.js), src/ (panel, localFetch), test/
 test/           node:test suites, fake-scs.js (SCS simulator), ui-smoke.js
 docs/           screenshots used in the README
 ```
 
-`src/core` is shared by the desktop app, the headless CLI and the tests. Keep it free of Electron so it can also back future front-ends (a VS Code extension, a Marketplace app).
+`src/core` is shared by the desktop app, the headless CLI and the tests. Keep it free of Electron and of `vscode`: it backs the desktop app, the VS Code extension and future front-ends. Both front-ends answer the UI through `src/host/handlers.js`: add new UI requests there, not in `src/main` or the extension.
 
 ## Ground rules for changes
 
@@ -64,6 +66,7 @@ These protect users' environments. Pull requests that break them won't be merged
 
 ```bash
 npm test                                              # all engine tests
+cd extension && npm install && npm test               # VS Code extension tests
 node --test test/conflicts.test.js                    # one suite
 xvfb-run -a npx electron --no-sandbox test/ui-smoke.js   # UI smoke test (Linux)
 ```

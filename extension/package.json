@@ -1,0 +1,163 @@
+{
+  "name": "devsync-sitecoreai",
+  "displayName": "DevSync for SitecoreAI",
+  "description": "Pull SitecoreAI cloud content into your local Docker CM, with every template, rendering, datasource and media item it depends on.",
+  "version": "0.2.1",
+  "publisher": "uday0508",
+  "license": "Apache-2.0",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uday0508/sitecore-local-sync"
+  },
+  "bugs": {
+    "url": "https://github.com/uday0508/sitecore-local-sync/issues"
+  },
+  "homepage": "https://github.com/uday0508/sitecore-local-sync#readme",
+  "keywords": [
+    "sitecore",
+    "sitecoreai",
+    "xm cloud",
+    "serialization",
+    "scs",
+    "headless",
+    "docker"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/sitecore.json",
+    "onUri"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "DevSync runs the Sitecore CLI from your project, so the workspace must be trusted."
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "devsync",
+          "title": "DevSync",
+          "icon": "media/devsync.svg"
+        }
+      ]
+    },
+    "views": {
+      "devsync": [
+        {
+          "id": "devsync.home",
+          "name": "DevSync"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "devsync.home",
+        "contents": "DevSync opens as a full editor tab.\n[Open DevSync](command:devsync.open)\nRight-click a serialized .yml item and choose **Pull latest from cloud** to refresh one item."
+      }
+    ],
+    "commands": [
+      {
+        "command": "devsync.open",
+        "title": "Open DevSync",
+        "category": "DevSync",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "devsync.pullItem",
+        "title": "DevSync: Pull latest from cloud",
+        "category": "DevSync",
+        "enablement": "!devsync.running"
+      },
+      {
+        "command": "devsync.cancel",
+        "title": "Cancel the running sync",
+        "category": "DevSync",
+        "enablement": "devsync.running"
+      },
+      {
+        "command": "devsync.showLog",
+        "title": "Show log",
+        "category": "DevSync"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "devsync.open",
+          "when": "view == devsync.home",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "devsync.pullItem",
+          "when": "resourceExtname == .yml",
+          "group": "devsync@1"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "devsync.pullItem",
+          "when": "resourceExtname == .yml",
+          "group": "devsync@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "devsync.pullItem",
+          "when": "resourceExtname == .yml"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DevSync",
+      "properties": {
+        "devsync.localCaCertificate": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the root certificate (PEM) that signed your local CM's HTTPS certificate, usually mkcert's `rootCA.pem`. Only needed if DevSync can't verify `https://*.localhost` on its own. Certificate checks are never turned off."
+        },
+        "devsync.dotnetPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to `dotnet`. Leave empty to use the one on your PATH."
+        },
+        "devsync.apiTimeoutSeconds": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "markdownDescription": "How long to wait for one SitecoreAI API request before retrying once and then stopping."
+        },
+        "devsync.cliIdleMinutes": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "markdownDescription": "Stop a Sitecore CLI command that prints nothing for this many minutes."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch",
+    "test": "node --test test/*.test.js",
+    "package": "node build.js --production && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0"
+  }
+}

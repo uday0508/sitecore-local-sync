@@ -28,4 +28,5 @@ contextBridge.exposeInMainWorld('devsync', {
   onEvent: (fn) => ipcRenderer.on('sync:event', (_e, ev) => fn(ev)),
   onConflicts: (fn) => ipcRenderer.on('sync:conflicts', (_e, list) => fn(list)),
   resolveConflicts: call('sync:resolve'),
+  onCommand: (fn) => ipcRenderer.on('ui:command', (_e, cmd) => fn(cmd)),
 });

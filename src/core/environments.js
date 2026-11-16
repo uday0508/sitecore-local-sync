@@ -11,8 +11,17 @@ const { runCli } = require('./workspace');
  * would by hand. DevSync connects without --allow-write, so the endpoint stays read-only.
  */
 async function captureCli(args, { cwd, dotnet, onLine = () => {} }) {
-  const lines = [];
-  await runCli(args, { cwd, dotnet, idleMs: 120000, onLine: (l, kind) => { if (kind === 'out') lines.push(l); onLine(l, kind); } });
+  const lines = []; const all = [];
+  try {
+    await runCli(args, { cwd, dotnet, idleMs: 120000, onLine: (l, kind) => { all.push(l); if (kind === 'out') lines.push(l); onLine(l, kind); } });
+  } catch (e) {
+    if (/NotAuthenticated|refresh token was (corrupted|expired)|re-login|not logged in/i.test(all.join('\n'))) {
+      const err = new Error('Your Sitecore CLI login has expired. Run "dotnet sitecore cloud login" in the project folder, then try again.');
+      err.code = 'LOGIN_EXPIRED';
+      throw err;
+    }
+    throw e;
+  }
   return lines.join('\n');
 }
 

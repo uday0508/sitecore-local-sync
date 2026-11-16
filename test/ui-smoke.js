@@ -16,7 +16,12 @@ app.whenReady().then(async () => {
   win.webContents.on('console-message', (_e, level, msg) => { if (level >= 2) errors.push(msg); });
   await win.loadFile(path.join(__dirname, '..', 'src', 'renderer', 'index.html'));
   const js = (code) => win.webContents.executeJavaScript(code);
-  const shot = async (name) => fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+  // A hidden window paints lazily: invalidate, let a frame land, then capture.
+  const shot = async (name) => {
+    win.webContents.invalidate(); await wait(400); await win.webContents.capturePage();
+    win.webContents.invalidate(); await wait(300);
+    fs.writeFileSync(path.join(out, name), (await win.webContents.capturePage()).toPNG());
+  };
   const checks = {};
 
   await wait(1800); // auto-open last project + auto-connect
