@@ -2,6 +2,8 @@
 
 **Pull real content from a SitecoreAI cloud environment into your local Docker CM, in a few clicks.**
 
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/uday0508.devsync-sitecoreai?label=VS%20Code%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=uday0508.devsync-sitecoreai) [![Installs](https://img.shields.io/visual-studio-marketplace/i/uday0508.devsync-sitecoreai)](https://marketplace.visualstudio.com/items?itemName=uday0508.devsync-sitecoreai)
+
 Sitecore's tools move content cloud ↔ cloud (Content Transfer / Item Transfer APIs) and XP → cloud (SitecoreAI Pathway). Getting cloud content *down to a developer laptop* still means hand-writing module JSON, running `ser pull` / `ser push` by hand, and guessing which datasources and media a page needs. DevSync replaces that with a desktop app:
 
 1. **Open** your solution once. DevSync remembers the project, the environments and how you signed in, and reconnects by itself next time.
@@ -177,13 +179,20 @@ To let the headless CLI call the local CM's API, trust the local dev certificate
 
 ## VS Code extension
 
-The same app also runs inside VS Code, in [`extension/`](extension/README.md). It opens the same full-screen UI in an editor tab, themed to match VS Code, served by the same host layer (`src/host/handlers.js`). It adds **Pull latest from cloud** on any serialized `.yml`, a **Log in** prompt when the CLI login expires, and `vscode://` links for a Page Builder "Sync this page" handoff.
+The same app also runs inside VS Code. **Install it from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=uday0508.devsync-sitecoreai)**: search "DevSync" in the Extensions panel, or run:
+
+```powershell
+code --install-extension uday0508.devsync-sitecoreai
+```
+
+It opens the same full-screen UI in an editor tab, themed to match VS Code, served by the same host layer (`src/host/handlers.js`). It adds **Pull latest from cloud** on any serialized `.yml`, a **Log in** prompt when the CLI login expires, and `vscode://` links for a Page Builder "Sync this page" handoff. Source: [`extension/`](extension/README.md).
+
+To build the `.vsix` yourself:
 
 ```powershell
 cd extension
 npm install
 npm run package        # builds dist/extension.js and devsync-sitecoreai-<version>.vsix
-code --install-extension devsync-sitecoreai-0.1.0.vsix
 ```
 
 ## Tests
@@ -209,11 +218,5 @@ bin/devsync.js  headless CLI
 extension/      VS Code extension (bundles src/core with esbuild)
 test/           node:test suites and the UI smoke test
 ```
-
-## Roadmap ideas
-
-- Content Hub asset sync (pull DAM assets referenced by local pages)
-- "Sync this page" button as a Sitecore Marketplace app that hands off to VS Code or DevSync
-- Scheduled background sync
 
 License: Apache-2.0
